@@ -4,6 +4,8 @@ A minimal Redis-compatible in-memory key-value server in Rust. Hand-written from
 
 Speaks RESP over TCP, so real `redis-cli` clients work: ping, get, set, delete, check existence, set relative or absolute TTLs, query them, persist keys, and subscribe to channels. Data survives restarts on a snapshot baseline plus an append-only command log. Shutdown is stdin EOF or `quit`/`exit`.
 
+![redis-cli connecting to steller: PING, SET, GET, EXISTS, DEL](demo/demo.gif)
+
 ## Why "steller"
 
 Steller's jay is the loud blue corvid all over the Pacific Northwest. It is a good mimic, and its party trick is imitating a red-tailed hawk well enough to clear a feeder.
