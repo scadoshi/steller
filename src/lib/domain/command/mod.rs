@@ -2,17 +2,13 @@ pub mod cache;
 pub mod channel;
 pub mod outcome;
 
-use std::{num::ParseIntError, str::Utf8Error};
-use thiserror::Error;
-
 use crate::domain::command::{
-    cache::{
-        CacheCommand,
-        read::ReadCommand,
-        write::{SetOptions, WriteCommand},
-    },
+    cache::{CacheCommand, read::ReadCommand, write::WriteCommand},
     channel::ChannelCommand,
 };
+use crate::domain::time::Milliseconds;
+use std::{num::ParseIntError, str::Utf8Error};
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum CommandError {
@@ -22,6 +18,10 @@ pub enum CommandError {
     NotEnoughParts,
     #[error("too many parts")]
     TooManyParts,
+    /// An argument was where one belonged but isn't one this command knows, such as a
+    /// `SET` option that isn't EX, PX, EXAT, or PXAT. Redis calls this a syntax error.
+    #[error("syntax error")]
+    Syntax,
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
     #[error(transparent)]
@@ -67,9 +67,9 @@ impl Command {
     pub fn set(
         key: impl Into<Vec<u8>>,
         value: impl Into<Vec<u8>>,
-        options: Option<SetOptions>,
+        expires_at: Option<Milliseconds>,
     ) -> Self {
-        WriteCommand::set(key, value, options).into()
+        WriteCommand::set(key, value, expires_at).into()
     }
 
     pub fn delete(key: impl Into<Vec<u8>>) -> Self {
@@ -80,8 +80,8 @@ impl Command {
         ReadCommand::exists(key).into()
     }
 
-    pub fn expire_at(key: impl Into<Vec<u8>>, absolute_ttl: u64) -> Self {
-        WriteCommand::expire_at(key, absolute_ttl).into()
+    pub fn expire_at(key: impl Into<Vec<u8>>, expires_at: Milliseconds) -> Self {
+        WriteCommand::expire_at(key, expires_at).into()
     }
 
     pub fn ttl(key: impl Into<Vec<u8>>) -> Self {

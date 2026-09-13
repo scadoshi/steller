@@ -1,9 +1,9 @@
-//! Point-in-time snapshot — the recovery baseline half of the persister.
+//! Point-in-time snapshot: the recovery baseline half of the persister.
 //!
 //! A `wincode`-serialized dump of the entire map. On recovery it's loaded first, then the
 //! AOF is replayed on top. Writes go through a **temp-file-then-rename**: serialize to
 //! `<path>.tmp`, then atomically `rename` it over the live snapshot. Rename is atomic on
-//! the same filesystem, so a crash mid-write can never leave a half-written snapshot — you
+//! the same filesystem, so a crash mid-write can never leave a half-written snapshot. You
 //! always have either the complete old one or the complete new one.
 
 use crate::{
@@ -93,6 +93,7 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::time::Milliseconds;
     use crate::test_support::TempPath;
 
     fn fresh() -> (Snapshot, TempPath) {
@@ -121,7 +122,10 @@ mod tests {
         let (snap, _t) = fresh();
         let mut map = HashMap::new();
         map.insert(b"a".to_vec(), Entry::new("1", None));
-        map.insert(b"b".to_vec(), Entry::new("2", Some(1_700_000_000)));
+        map.insert(
+            b"b".to_vec(),
+            Entry::new("2", Some(Milliseconds::new(1_700_000_000))),
+        );
         map.insert(b"c".to_vec(), Entry::new(vec![0xff, 0x00, 0x7f], None));
         snap.store(&map).unwrap();
         assert_eq!(snap.load().unwrap(), map);

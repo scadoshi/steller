@@ -1,18 +1,41 @@
 //! Lifts a parsed RESP [`Frame`] into a domain [`Command`].
 //!
 //! A valid command on the wire is always an array of bulk strings: the first is the
-//! verb (case-insensitive), the rest are arguments. Anything else — a bare bulk string,
-//! an array whose first element is an array, an inner array where a key is expected —
-//! is a [`CommandFromFrameError::UnexpectedFrame`]. Verb-level errors (wrong arity,
+//! verb (case-insensitive), the rest are arguments. Anything else is a
+//! [`CommandFromFrameError::UnexpectedFrame`]: a bare bulk string, an array whose first
+//! element is an array, an inner array where a key belongs. Verb-level errors (wrong arity,
 //! non-numeric TTL, unknown verb) surface as [`CommandError`].
 
-use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
-
 use crate::{
-    domain::command::{Command, CommandError},
+    domain::{
+        command::{Command, CommandError},
+        time::{Milliseconds, Seconds},
+    },
     resp::frame::Frame,
 };
+use std::time::SystemTimeError;
 use thiserror::Error;
+
+/// Pull the next frame and require it to be a bulk string.
+macro_rules! next_bulk {
+    ($iter:expr) => {{
+        let Some(frame) = $iter.next() else {
+            return Err(CommandError::NotEnoughParts.into());
+        };
+        let Frame::BulkString(bytes) = frame else {
+            return Err(CommandFromFrameError::UnexpectedFrame);
+        };
+        bytes
+    }};
+}
+
+/// Parse a bulk string as a `u64`.
+fn parse_u64(bytes: &[u8]) -> Result<u64, CommandFromFrameError> {
+    Ok(std::str::from_utf8(bytes)
+        .map_err(CommandError::from)?
+        .parse::<u64>()
+        .map_err(CommandError::from)?)
+}
 
 /// Errors produced while turning a [`Frame`] into a [`Command`].
 #[derive(Debug, Error)]
@@ -53,24 +76,40 @@ impl TryFrom<Frame> for Command {
                         }
                         Ok(Self::get(key))
                     }
+                    // SET key value [EX s | PX ms | EXAT unix-s | PXAT unix-ms]
+                    //
+                    // All four options land on the same absolute Milliseconds deadline, so
+                    // nothing downstream can tell which one the client used. That is the
+                    // point: the relative forms read the clock here, on the live path, and
+                    // the AOF only ever sees an absolute value.
                     b"set" => {
-                        let (Some(key), Some(value)) = (iter.next(), iter.next()) else {
-                            return Err(CommandError::NotEnoughParts.into());
+                        let key = next_bulk!(iter);
+                        let value = next_bulk!(iter);
+                        let Some(option) = iter.next() else {
+                            return Ok(Self::set(key, value, None));
                         };
-                        let (Frame::BulkString(key), Frame::BulkString(value)) = (key, value)
-                        else {
+                        let Frame::BulkString(option) = option else {
                             return Err(CommandFromFrameError::UnexpectedFrame);
                         };
-                        if let (Some(set_expiry), Some(relative_ttl)) = (iter.next(), iter.next()) {
-                            todo!()
+                        let option = option.to_ascii_lowercase();
+                        // Reject an unknown keyword before demanding its argument, so
+                        // `SET k v junk` is a syntax error rather than a missing-parts one.
+                        if !matches!(option.as_slice(), b"ex" | b"px" | b"exat" | b"pxat") {
+                            return Err(CommandError::Syntax.into());
                         }
-                        todo!(
-                            "parse 2 bulk strings matching something like EX 60 at this point to handle set options"
-                        );
-                        // if iter.next().is_some() {
-                        //     return Err(CommandError::TooManyParts.into());
-                        // }
-                        // Ok(Self::set(key, value))
+                        let amount = parse_u64(&next_bulk!(iter))?;
+                        let expires_at = match option.as_slice() {
+                            b"ex" => {
+                                Milliseconds::now()?.saturating_add(Seconds::new(amount).into())
+                            }
+                            b"px" => Milliseconds::now()?.saturating_add(Milliseconds::new(amount)),
+                            b"exat" => Seconds::new(amount).into(),
+                            _ => Milliseconds::new(amount),
+                        };
+                        if iter.next().is_some() {
+                            return Err(CommandError::TooManyParts.into());
+                        }
+                        Ok(Self::set(key, value, Some(expires_at)))
                     }
                     b"del" => {
                         let key = iter.next().ok_or(CommandError::NotEnoughParts)?;
@@ -104,40 +143,37 @@ impl TryFrom<Frame> for Command {
                         }
                         Ok(Self::exists(key))
                     }
+                    // Relative, so it reads the clock. Safe because WriteCommand has no
+                    // relative variant: this can never be the form that reaches the AOF,
+                    // and replay therefore never runs this arm.
                     b"expire" => {
-                        let (Some(key), Some(ttl)) = (iter.next(), iter.next()) else {
-                            return Err(CommandError::NotEnoughParts.into());
-                        };
-                        let (Frame::BulkString(key), Frame::BulkString(ttl_bytes)) = (key, ttl)
-                        else {
-                            return Err(CommandFromFrameError::UnexpectedFrame);
-                        };
+                        let key = next_bulk!(iter);
+                        let seconds = Seconds::new(parse_u64(&next_bulk!(iter))?);
                         if iter.next().is_some() {
                             return Err(CommandError::TooManyParts.into());
                         }
-                        let ttl: u64 = std::str::from_utf8(&ttl_bytes)
-                            .map_err(CommandError::from)?
-                            .parse()
-                            .map_err(CommandError::from)?;
-                        let abs_ttl = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)?
-                            .as_secs()
-                            .saturating_add(ttl);
-                        Ok(Self::expire_at(key, abs_ttl))
+                        Ok(Self::expire_at(
+                            key,
+                            Milliseconds::now()?.saturating_add(seconds.into()),
+                        ))
                     }
                     b"expireat" => {
-                        let (Some(key), Some(ttl)) = (iter.next(), iter.next()) else {
-                            return Err(CommandError::NotEnoughParts.into());
-                        };
-                        let (Frame::BulkString(key), Frame::BulkString(ttl_bytes)) = (key, ttl)
-                        else {
-                            return Err(CommandFromFrameError::UnexpectedFrame);
-                        };
-                        let ttl = std::str::from_utf8(&ttl_bytes)
-                            .map_err(CommandError::from)?
-                            .parse()
-                            .map_err(CommandError::from)?;
-                        Ok(Self::expire_at(key, ttl))
+                        let key = next_bulk!(iter);
+                        let seconds = Seconds::new(parse_u64(&next_bulk!(iter))?);
+                        if iter.next().is_some() {
+                            return Err(CommandError::TooManyParts.into());
+                        }
+                        Ok(Self::expire_at(key, seconds.into()))
+                    }
+                    // The form the AOF speaks. Already in the storage unit, so it needs no
+                    // conversion, which is exactly why encoding picks it over EXPIREAT.
+                    b"pexpireat" => {
+                        let key = next_bulk!(iter);
+                        let millis = Milliseconds::new(parse_u64(&next_bulk!(iter))?);
+                        if iter.next().is_some() {
+                            return Err(CommandError::TooManyParts.into());
+                        }
+                        Ok(Self::expire_at(key, millis))
                     }
                     b"ttl" => {
                         let key = iter.next().ok_or(CommandError::NotEnoughParts)?;
@@ -207,6 +243,7 @@ impl TryFrom<Frame> for Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::command::cache::{CacheCommand, write::WriteCommand};
 
     // ---------- ok cases ----------
 
@@ -230,27 +267,178 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn try_from_frame_ok_set() {
-    //     assert_eq!(
-    //         Command::try_from(Frame::Array(vec![
-    //             Frame::BulkString(b"set".to_vec()),
-    //             Frame::BulkString(b"foo".to_vec()),
-    //             Frame::BulkString(b"value".to_vec()),
-    //         ]))
-    //         .unwrap(),
-    //         Command::set(b"foo", b"value")
-    //     );
-    //     assert_eq!(
-    //         Command::try_from(Frame::Array(vec![
-    //             Frame::BulkString(b"SET".to_vec()),
-    //             Frame::BulkString(b"foo".to_vec()),
-    //             Frame::BulkString(b"value".to_vec()),
-    //         ]))
-    //         .unwrap(),
-    //         Command::set(b"foo", b"value")
-    //     );
-    // }
+    #[test]
+    fn try_from_frame_ok_set() {
+        for verb in [b"set".as_slice(), b"SET".as_slice()] {
+            assert_eq!(
+                Command::try_from(Frame::Array(vec![
+                    Frame::BulkString(verb.to_vec()),
+                    Frame::BulkString(b"foo".to_vec()),
+                    Frame::BulkString(b"value".to_vec()),
+                ]))
+                .unwrap(),
+                Command::set(b"foo", b"value", None)
+            );
+        }
+    }
+
+    // EXAT and PXAT are already absolute, so they land on an exact deadline with no clock
+    // read involved.
+    #[test]
+    fn try_from_frame_ok_set_absolute_options() {
+        for (option, amount, expected) in [
+            (b"exat".as_slice(), "1700000000", 1_700_000_000_000u64),
+            (b"EXAT".as_slice(), "1700000000", 1_700_000_000_000),
+            (b"pxat".as_slice(), "1700000000123", 1_700_000_000_123),
+            (b"PXAT".as_slice(), "1700000000123", 1_700_000_000_123),
+        ] {
+            assert_eq!(
+                Command::try_from(Frame::Array(vec![
+                    Frame::BulkString(b"set".to_vec()),
+                    Frame::BulkString(b"foo".to_vec()),
+                    Frame::BulkString(b"value".to_vec()),
+                    Frame::BulkString(option.to_vec()),
+                    Frame::BulkString(amount.as_bytes().to_vec()),
+                ]))
+                .unwrap(),
+                Command::set(b"foo", b"value", Some(Milliseconds::new(expected))),
+                "option {}",
+                String::from_utf8_lossy(option)
+            );
+        }
+    }
+
+    // EX and PX are relative, so the deadline is bracketed between two clock reads the
+    // same way EXPIRE is.
+    #[test]
+    fn try_from_frame_ok_set_relative_options() {
+        for (option, amount, offset) in [
+            (b"ex".as_slice(), "60", Milliseconds::new(60_000)),
+            (b"EX".as_slice(), "60", Milliseconds::new(60_000)),
+            (b"px".as_slice(), "1500", Milliseconds::new(1_500)),
+            (b"PX".as_slice(), "1500", Milliseconds::new(1_500)),
+        ] {
+            let before = Milliseconds::now().unwrap();
+            let cmd = Command::try_from(Frame::Array(vec![
+                Frame::BulkString(b"set".to_vec()),
+                Frame::BulkString(b"foo".to_vec()),
+                Frame::BulkString(b"value".to_vec()),
+                Frame::BulkString(option.to_vec()),
+                Frame::BulkString(amount.as_bytes().to_vec()),
+            ]))
+            .unwrap();
+            let after = Milliseconds::now().unwrap();
+
+            let Command::Cache(CacheCommand::Write(WriteCommand::Set {
+                expires_at: Some(expires_at),
+                ..
+            })) = cmd
+            else {
+                panic!("expected a SET carrying a deadline, got {cmd:?}");
+            };
+            let lo = before.saturating_add(offset);
+            let hi = after.saturating_add(offset);
+            assert!(
+                (lo..=hi).contains(&expires_at),
+                "{expires_at:?} not in [{lo:?}, {hi:?}]"
+            );
+        }
+    }
+
+    #[test]
+    fn try_from_frame_err_set_option_without_amount() {
+        assert!(matches!(
+            Command::try_from(Frame::Array(vec![
+                Frame::BulkString(b"set".to_vec()),
+                Frame::BulkString(b"foo".to_vec()),
+                Frame::BulkString(b"value".to_vec()),
+                Frame::BulkString(b"ex".to_vec()),
+            ])),
+            Err(CommandFromFrameError::CommandError(
+                CommandError::NotEnoughParts
+            ))
+        ));
+    }
+
+    #[test]
+    fn try_from_frame_err_set_non_numeric_amount() {
+        assert!(matches!(
+            Command::try_from(Frame::Array(vec![
+                Frame::BulkString(b"set".to_vec()),
+                Frame::BulkString(b"foo".to_vec()),
+                Frame::BulkString(b"value".to_vec()),
+                Frame::BulkString(b"ex".to_vec()),
+                Frame::BulkString(b"soon".to_vec()),
+            ])),
+            Err(CommandFromFrameError::CommandError(CommandError::ParseInt(
+                _
+            )))
+        ));
+    }
+
+    #[test]
+    fn try_from_frame_err_set_too_many_parts_after_option() {
+        assert!(matches!(
+            Command::try_from(Frame::Array(vec![
+                Frame::BulkString(b"set".to_vec()),
+                Frame::BulkString(b"foo".to_vec()),
+                Frame::BulkString(b"value".to_vec()),
+                Frame::BulkString(b"ex".to_vec()),
+                Frame::BulkString(b"60".to_vec()),
+                Frame::BulkString(b"extra".to_vec()),
+            ])),
+            Err(CommandFromFrameError::CommandError(
+                CommandError::TooManyParts
+            ))
+        ));
+    }
+
+    // PEXPIREAT is the verb the AOF speaks: already in the storage unit, so it must pass
+    // through untouched.
+    #[test]
+    fn try_from_frame_ok_pexpireat_is_taken_verbatim() {
+        for verb in [b"pexpireat".as_slice(), b"PEXPIREAT".as_slice()] {
+            assert_eq!(
+                Command::try_from(Frame::Array(vec![
+                    Frame::BulkString(verb.to_vec()),
+                    Frame::BulkString(b"foo".to_vec()),
+                    Frame::BulkString(b"1700000000123".to_vec()),
+                ]))
+                .unwrap(),
+                Command::expire_at("foo", Milliseconds::new(1_700_000_000_123))
+            );
+        }
+    }
+
+    #[test]
+    fn try_from_frame_err_pexpireat_too_many_parts() {
+        assert!(matches!(
+            Command::try_from(Frame::Array(vec![
+                Frame::BulkString(b"pexpireat".to_vec()),
+                Frame::BulkString(b"foo".to_vec()),
+                Frame::BulkString(b"1700000000123".to_vec()),
+                Frame::BulkString(b"extra".to_vec()),
+            ])),
+            Err(CommandFromFrameError::CommandError(
+                CommandError::TooManyParts
+            ))
+        ));
+    }
+
+    #[test]
+    fn try_from_frame_err_expireat_too_many_parts() {
+        assert!(matches!(
+            Command::try_from(Frame::Array(vec![
+                Frame::BulkString(b"expireat".to_vec()),
+                Frame::BulkString(b"foo".to_vec()),
+                Frame::BulkString(b"1700000000".to_vec()),
+                Frame::BulkString(b"extra".to_vec()),
+            ])),
+            Err(CommandFromFrameError::CommandError(
+                CommandError::TooManyParts
+            ))
+        ));
+    }
 
     #[test]
     fn try_from_frame_ok_del() {
@@ -325,7 +513,7 @@ mod tests {
                 Frame::BulkString(b"1700000000".to_vec()),
             ]))
             .unwrap(),
-            Command::expire_at("foo", 1_700_000_000),
+            Command::expire_at("foo", Seconds::new(1_700_000_000).into()),
         );
         assert_eq!(
             Command::try_from(Frame::Array(vec![
@@ -334,49 +522,47 @@ mod tests {
                 Frame::BulkString(b"1700000000".to_vec()),
             ]))
             .unwrap(),
-            Command::expire_at("foo", 1_700_000_000),
+            Command::expire_at("foo", Seconds::new(1_700_000_000).into()),
         );
     }
 
-    // EXPIRE is normalized to an absolute deadline at parse time (now + ttl), so the log
-    // only ever stores EXPIREAT and replay stays time-invariant. The deadline is a wall-clock
-    // read, so bracket it: parse between two now() reads and assert it lands in [before+ttl,
-    // after+ttl].
+    /// The deadline for a relative TTL comes off the wall clock, so pin it between two
+    /// clock reads and assert it lands in the window.
+    fn assert_deadline_about(
+        cmd: Command,
+        expected_key: &[u8],
+        before: Milliseconds,
+        after: Milliseconds,
+        offset: Milliseconds,
+    ) {
+        match cmd {
+            Command::Cache(CacheCommand::Write(WriteCommand::ExpireAt { key, expires_at })) => {
+                assert_eq!(key, expected_key);
+                let lo = before.saturating_add(offset);
+                let hi = after.saturating_add(offset);
+                assert!(
+                    (lo..=hi).contains(&expires_at),
+                    "{expires_at:?} not in [{lo:?}, {hi:?}]"
+                );
+            }
+            other => panic!("expected ExpireAt, got {other:?}"),
+        }
+    }
+
+    // EXPIRE is normalized to an absolute deadline at parse time, so the log only ever
+    // stores the absolute form and replay stays time-invariant.
     #[test]
     fn try_from_frame_ok_expire_normalizes_to_absolute() {
-        use crate::domain::command::cache::{CacheCommand, write::WriteCommand};
-
         for verb in [b"expire".as_slice(), b"EXPIRE".as_slice()] {
-            let before = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+            let before = Milliseconds::now().unwrap();
             let cmd = Command::try_from(Frame::Array(vec![
                 Frame::BulkString(verb.to_vec()),
                 Frame::BulkString(b"foo".to_vec()),
                 Frame::BulkString(b"60".to_vec()),
             ]))
             .unwrap();
-            let after = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-
-            match cmd {
-                Command::Cache(CacheCommand::Write(WriteCommand::ExpireAt {
-                    key,
-                    absolute_ttl,
-                })) => {
-                    assert_eq!(key, b"foo");
-                    assert!(
-                        (before + 60..=after + 60).contains(&absolute_ttl),
-                        "absolute_ttl {absolute_ttl} not in [{}, {}]",
-                        before + 60,
-                        after + 60
-                    );
-                }
-                other => panic!("expected EXPIRE to normalize to ExpireAt, got {other:?}"),
-            }
+            let after = Milliseconds::now().unwrap();
+            assert_deadline_about(cmd, b"foo", before, after, Seconds::new(60).into());
         }
     }
 
@@ -467,7 +653,7 @@ mod tests {
         ));
     }
 
-    // ---------- GET — errors ----------
+    // ---------- GET errors ----------
 
     #[test]
     fn try_from_frame_err_get_too_many_parts() {
@@ -504,10 +690,12 @@ mod tests {
         ));
     }
 
-    // ---------- SET — errors ----------
+    // ---------- SET errors ----------
 
+    // A fourth part is now read as an option keyword, so an unrecognized one is a syntax
+    // error rather than an excess argument.
     #[test]
-    fn try_from_frame_err_set_too_many_parts() {
+    fn try_from_frame_err_set_unknown_option() {
         assert!(matches!(
             Command::try_from(Frame::Array(vec![
                 Frame::BulkString(b"set".to_vec()),
@@ -515,9 +703,7 @@ mod tests {
                 Frame::BulkString(b"value".to_vec()),
                 Frame::BulkString(b"value".to_vec()),
             ])),
-            Err(CommandFromFrameError::CommandError(
-                CommandError::TooManyParts
-            ))
+            Err(CommandFromFrameError::CommandError(CommandError::Syntax))
         ));
     }
 
@@ -564,7 +750,7 @@ mod tests {
         ));
     }
 
-    // ---------- DEL — errors ----------
+    // ---------- DEL errors ----------
 
     #[test]
     fn try_from_frame_err_del_too_many_parts() {
@@ -601,7 +787,7 @@ mod tests {
         ));
     }
 
-    // ---------- EXISTS — errors ----------
+    // ---------- EXISTS errors ----------
 
     #[test]
     fn try_from_frame_err_exists_too_many_parts() {
@@ -638,7 +824,7 @@ mod tests {
         ));
     }
 
-    // ---------- PING — errors ----------
+    // ---------- PING errors ----------
 
     #[test]
     fn try_from_frame_err_ping_too_many_parts() {
@@ -665,7 +851,7 @@ mod tests {
         ));
     }
 
-    // ---------- EXPIRE — errors ----------
+    // ---------- EXPIRE errors ----------
 
     #[test]
     fn try_from_frame_err_expire_not_enough_parts_zero_args() {
@@ -769,7 +955,7 @@ mod tests {
         ));
     }
 
-    // ---------- EXPIREAT — errors ----------
+    // ---------- EXPIREAT errors ----------
 
     #[test]
     fn try_from_frame_err_expireat_not_enough_parts_zero_args() {
@@ -858,7 +1044,7 @@ mod tests {
         ));
     }
 
-    // ---------- TTL — errors ----------
+    // ---------- TTL errors ----------
 
     #[test]
     fn try_from_frame_err_ttl_too_many_parts() {
@@ -895,7 +1081,7 @@ mod tests {
         ));
     }
 
-    // ---------- PERSIST — errors ----------
+    // ---------- PERSIST errors ----------
 
     #[test]
     fn try_from_frame_err_persist_too_many_parts() {
@@ -994,7 +1180,7 @@ mod tests {
         );
     }
 
-    // No-arg UNSUBSCRIBE is legal — it means "every channel this session is in".
+    // No-arg UNSUBSCRIBE is legal. It means "every channel this session is in".
     #[test]
     fn try_from_frame_ok_unsubscribe_no_channels() {
         assert_eq!(

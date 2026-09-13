@@ -1,20 +1,16 @@
-//! The persistence adapter — the concrete [`CacheRepository`] backing the domain.
+//! The concrete [`CacheRepository`] backing the domain.
 //!
-//! [`Persister`] composes two single-responsibility pieces, each owning its own file:
+//! [`Persister`] composes two pieces, each owning its own file. [`Aof`] is the append-only
+//! log of mutations, which covers durability between snapshots. [`Snapshot`] is a
+//! `wincode` dump of the whole map, which is the recovery baseline.
 //!
-//! - [`Aof`] — the append-only log of state-mutating commands (durability between
-//!   snapshots).
-//! - [`Snapshot`] — a point-in-time `wincode` dump of the whole map (the recovery
-//!   baseline).
+//! Recovery uses both: load the snapshot for base state, then replay the AOF on top for
+//! everything since. Taking a snapshot truncates the AOF, so the log only holds mutations
+//! after the last snapshot. That truncation is the whole compaction story.
 //!
-//! The hybrid recovery model: load the snapshot for the base state, then replay the AOF on
-//! top for everything since. Taking a snapshot truncates the AOF, so the log only ever
-//! holds mutations *after* the last snapshot — that's the compaction story.
-//!
-//! Each concrete error type ([`PersisterError`], [`AofError`](aof::AofError),
-//! [`SnapshotError`](snapshot::SnapshotError)) converts into the domain's
-//! [`RepositoryError`] via a local `From` impl, so failures are translated to the domain's
-//! vocabulary *at this boundary* and the domain never sees an outbound error type.
+//! Each concrete error type converts into the domain's [`RepositoryError`] through a local
+//! `From` impl, so the translation happens at this boundary and the domain never sees an
+//! outbound error type.
 
 pub mod aof;
 mod persister_inner;
@@ -38,14 +34,14 @@ static AOF_PATH: &str = "cache/aof";
 /// On-disk path of the snapshot dump.
 const SNAPSHOT_PATH: &str = "cache/snapshot";
 
-/// Failure setting up or coordinating the persister itself (as opposed to the AOF- or
-/// snapshot-specific errors). Boxed into [`RepositoryError`] at the boundary.
+/// Failure setting up or coordinating the persister itself, as opposed to the AOF- and
+/// snapshot-specific errors. Boxed into [`RepositoryError`] at the boundary.
 #[derive(Debug, Error)]
 pub enum PersisterError {
     /// I/O failure opening or creating a persistence file.
     #[error(transparent)]
     Io(#[from] IoError),
-    /// The cache mutex was poisoned (a writer panicked while holding it).
+    /// A writer panicked while holding the cache mutex.
     #[error("cache mutex poisoned")]
     MutexPoisoned,
 }
@@ -56,8 +52,8 @@ impl From<PersisterError> for RepositoryError {
     }
 }
 
-/// The persistence adapter. Holds both halves (log + snapshot); `Clone` is cheap because
-/// each half is a shared handle, so the repository can be cloned into every session.
+/// The persistence adapter, holding the log and the snapshot. Each half is a shared
+/// handle, so cloning it into every session is cheap.
 #[derive(Debug, Clone)]
 pub struct Persister {
     pub aof: Aof,
@@ -65,8 +61,8 @@ pub struct Persister {
 }
 
 impl Persister {
-    /// Open (creating if absent) both the AOF and snapshot files and assemble the
-    /// persister. Run once at startup, before recovery.
+    /// Open both files, creating them if absent, and assemble the persister. Runs once at
+    /// startup, before recovery.
     pub fn initialize() -> Result<Self, PersisterError> {
         let aof_path: PathBuf = AOF_PATH.into();
         let aof = Aof::from(PersisterInner::try_from(aof_path)?);
@@ -82,14 +78,15 @@ impl CacheRepository for Persister {
         Ok(())
     }
 
-    /// Snapshot then compact, as one critical section.
+    /// Snapshot then compact, in one critical section.
     ///
-    /// The cache lock is held across *both* the snapshot write and the AOF clear so no
-    /// mutation can land in between — otherwise a command written to the log after the
-    /// snapshot read but before the clear would be wiped without ever being captured.
-    /// Order is deliberate: snapshot first (durable baseline), then clear the now-redundant
-    /// log. A crash between the two only means replay re-applies already-snapshotted
-    /// commands, which is harmless.
+    /// The cache lock is held across both the snapshot write and the AOF clear, so no
+    /// mutation can land in the gap. Without that, a command written to the log after the
+    /// snapshot read but before the clear would be wiped having never been captured.
+    ///
+    /// Order matters too: snapshot first for the durable baseline, then clear the log that
+    /// just became redundant. A crash between the two only costs you a replay of commands
+    /// already in the snapshot.
     fn snapshot(&self, cache: &Cache) -> Result<(), RepositoryError> {
         let guard = cache.lock().map_err(|_| PersisterError::MutexPoisoned)?;
         self.snapshot.store(&guard)?;
@@ -129,20 +126,17 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn append_writes_to_aof_only() {
-    //     let t = fresh();
-    //     t.persister
-    //         .append(WriteCommand::Set {
-    //             key: b"foo".to_vec(),
-    //             value: b"bar".to_vec(),
-    //         })
-    //         .unwrap();
-    //     t.flush_aof();
-    //     assert!(fs::metadata(&t.aof_path.path).unwrap().len() > 0);
-    //     // Snapshot file exists (created by PersisterInner) but is empty.
-    //     assert_eq!(fs::metadata(&t.snapshot_path.path).unwrap().len(), 0);
-    // }
+    #[test]
+    fn append_writes_to_aof_only() {
+        let t = fresh();
+        t.persister
+            .append(WriteCommand::set("foo", "bar", None))
+            .unwrap();
+        t.flush_aof();
+        assert!(fs::metadata(&t.aof_path.path).unwrap().len() > 0);
+        // PersisterInner creates the snapshot file, but nothing has written to it.
+        assert_eq!(fs::metadata(&t.snapshot_path.path).unwrap().len(), 0);
+    }
 
     #[test]
     fn snapshot_persists_cache_contents() {
@@ -157,24 +151,22 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn snapshot_clears_the_aof() {
-    //     let t = fresh();
-    //     t.persister
-    //         .append(WriteCommand::Set {
-    //             key: b"foo".to_vec(),
-    //             value: b"bar".to_vec(),
-    //         })
-    //         .unwrap();
-    //     t.flush_aof();
-    //     assert!(fs::metadata(&t.aof_path.path).unwrap().len() > 0);
-    //
-    //     let cache = Cache::default();
-    //     cache.insert("foo", Entry::new("bar", None)).unwrap();
-    //     t.persister.snapshot(&cache).unwrap();
-    //
-    //     assert_eq!(fs::metadata(&t.aof_path.path).unwrap().len(), 0);
-    // }
+    // Snapshotting truncates the log. That truncation is the compaction.
+    #[test]
+    fn snapshot_clears_the_aof() {
+        let t = fresh();
+        t.persister
+            .append(WriteCommand::set("foo", "bar", None))
+            .unwrap();
+        t.flush_aof();
+        assert!(fs::metadata(&t.aof_path.path).unwrap().len() > 0);
+
+        let cache = Cache::default();
+        cache.insert("foo", Entry::new("bar", None)).unwrap();
+        t.persister.snapshot(&cache).unwrap();
+
+        assert_eq!(fs::metadata(&t.aof_path.path).unwrap().len(), 0);
+    }
 
     #[test]
     fn append_after_snapshot_resumes_logging() {

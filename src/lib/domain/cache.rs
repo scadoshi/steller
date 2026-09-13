@@ -1,93 +1,81 @@
-//! In-memory key-value store with TTL support and lazy + active expiry.
+//! In-memory key-value store with TTLs, expired lazily and swept actively.
 //!
-//! [`Cache`] is the only type a caller needs. It wraps `Arc<Mutex<HashMap<Vec<u8>, Entry>>>`
-//! so handles are cheap to clone across threads and the underlying map is shared. Every
-//! read path drops expired keys it encounters (lazy expiry); a separate sweeper thread
-//! in `inbound::server` calls [`Cache::remove_expired`] periodically to reclaim keys no
-//! one has touched.
+//! [`Cache`] wraps `Arc<Mutex<HashMap<Vec<u8>, Entry>>>`, so handles clone cheaply across
+//! threads and every clone shares the map. Read paths drop expired keys as they encounter
+//! them. The sweeper thread in `inbound::server` calls [`Cache::remove_expired`] on a tick
+//! to reclaim keys nobody has touched.
 //!
-//! ## Expiry model
+//! ## Expiry
 //!
-//! TTLs are stored as absolute UNIX seconds inside each [`Entry`]. Relative TTLs are
-//! converted to absolute at the API boundary, so the storage representation is uniform
-//! and serializable. `SystemTime` (not `Instant`) is used because `Instant` is
-//! process-local and meaningless across a restart — wall-clock skew at second-level
-//! granularity is acceptable for a TTL.
+//! Deadlines are absolute UNIX milliseconds. Relative TTLs are made absolute at parse
+//! time, so storage only ever sees one form and it serializes cleanly. See
+//! [`crate::domain::time`] for the clock and the conversion.
 //!
 //! ## Persistence
 //!
-//! The cache itself is purely in-memory and has no persistence methods. Durability lives
-//! in the outbound persister (`outbound::persister`): a `wincode`-serialized snapshot of
-//! the `HashMap<Vec<u8>, Entry>` plus an append-only command log replayed on startup.
+//! The cache has no persistence methods. Durability lives in `outbound::persister`: a
+//! `wincode` snapshot of the map plus an append-only command log replayed on startup.
 
-use crate::domain::command::{
-    cache::{
-        CacheCommand,
-        read::ReadCommand,
-        write::{SetOptions, WriteCommand},
+use crate::domain::{
+    command::{
+        cache::{CacheCommand, read::ReadCommand, write::WriteCommand},
+        outcome::{CommandOutcome, TtlOutcome},
     },
-    outcome::{CommandOutcome, TtlOutcome},
+    time::Milliseconds,
 };
 use std::{
     collections::HashMap,
     ops::Deref,
     sync::{Arc, Mutex},
-    time::{SystemTime, SystemTimeError, UNIX_EPOCH},
+    time::SystemTimeError,
 };
 use thiserror::Error;
 use wincode::{SchemaRead, SchemaWrite};
 
-type CO = CommandOutcome;
-
 /// Errors a [`Cache`] operation can return.
 #[derive(Debug, Error)]
 pub enum CacheError {
-    /// The shared mutex was poisoned by a thread that panicked while holding it.
-    /// Poisoning means the in-memory state may be inconsistent; the cache cannot be
-    /// safely used after this.
+    /// A thread panicked while holding the shared mutex. The in-memory state may be
+    /// inconsistent, so the cache can't be used safely after this.
     #[error("cache mutex poisoned")]
     MutexPoisoned,
-    /// `SystemTime::now()` returned a value before the UNIX epoch — only possible if
-    /// the system clock is badly wrong.
+    /// The clock read landed before the UNIX epoch, which takes a badly wrong system
+    /// clock.
     #[error(transparent)]
     SystemTime(#[from] SystemTimeError),
 }
 
-/// A single cache entry: opaque value bytes plus an optional absolute TTL.
+/// Value bytes plus an optional deadline.
 ///
-/// `absolute_ttl` is UNIX seconds (wall clock). `None` means the entry has no expiry
-/// and lives until explicitly removed. Past timestamps are accepted but a subsequent
-/// read on this key will treat the entry as expired and drop it (lazy expiry).
+/// `None` means no expiry: the entry lives until something removes it. A past timestamp
+/// is accepted, and the next read on that key treats it as expired and drops it.
 #[derive(Clone, Debug, Default, SchemaWrite, SchemaRead, PartialEq, Hash)]
 pub struct Entry {
-    /// Opaque payload bytes — UTF-8 is never enforced so values can be jpegs, RESP
-    /// fragments, anything.
+    /// Opaque payload. UTF-8 is never enforced, so a value can be a jpeg, a RESP
+    /// fragment, anything.
     pub value: Vec<u8>,
-    /// Absolute UNIX seconds at which this entry expires, or `None` for no TTL.
-    pub absolute_ttl: Option<u64>,
+    /// Absolute UNIX millisecond deadline, or `None` for no TTL.
+    pub expires_at: Option<Milliseconds>,
 }
 
 impl Entry {
-    /// Build an [`Entry`] from convertible value bytes plus an optional absolute TTL.
-    /// To set a relative TTL, build with `None` and call [`Cache::set_relative_ttl`]
-    /// afterwards — the cache layer handles the now+seconds arithmetic.
-    pub fn new(value: impl Into<Vec<u8>>, absolute_ttl: Option<u64>) -> Self {
+    /// Build an [`Entry`] from value bytes plus an optional deadline.
+    pub fn new(value: impl Into<Vec<u8>>, expires_at: Option<Milliseconds>) -> Self {
         Self {
             value: value.into(),
-            absolute_ttl,
+            expires_at,
         }
     }
 }
 
-/// Thread-safe shared in-memory KV store.
+/// Thread-safe shared KV store.
 ///
-/// Cloning a `Cache` clones the underlying `Arc` — every clone refers to the same
-/// backing map. This is how the server hands the cache to its connection threads,
-/// sweeper, and persistence loop.
+/// Cloning clones the `Arc`, so every clone refers to the same backing map. That is how
+/// the server hands the cache to its connection threads, the sweeper, and the persistence
+/// loop.
 ///
-/// `Default` yields an empty in-memory cache backed by a fresh `Arc<Mutex<…>>`; use it
-/// for tests. To rebuild from disk, construct via [`Cache::new`] with a snapshot-loaded
-/// map and replay the log through the outbound persister.
+/// `Default` gives you an empty cache, which is what tests want. To rebuild from disk,
+/// pass a snapshot-loaded map to [`Cache::new`] and replay the log on top.
 #[derive(Clone, Debug, Default)]
 pub struct Cache {
     inner: Arc<Mutex<HashMap<Vec<u8>, Entry>>>,
@@ -107,18 +95,17 @@ impl Cache {
         }
     }
 
-    /// Fetch a clone of the [`Entry`] for `key`, or `None` if missing or expired.
+    /// Fetch a clone of the [`Entry`] for `key`, or `None` if it is missing or expired.
     ///
-    /// If the entry exists but its `absolute_ttl` has passed, this returns `None` *and*
-    /// removes the entry — that's the lazy-expiry contract. Lock is held across the
-    /// expiry check and removal so a concurrent insert can't race in between.
+    /// An expired entry returns `None` and is removed on the way out. The lock is held
+    /// across the check and the removal so a concurrent insert can't race in between.
     pub fn get(&self, key: impl AsRef<[u8]>) -> Result<Option<Entry>, CacheError> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let now = Milliseconds::now()?;
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         let entry = guard.get(key.as_ref()).cloned();
         if entry
             .as_ref()
-            .is_some_and(|e| e.absolute_ttl.is_some_and(|t| now >= t))
+            .is_some_and(|e| e.expires_at.is_some_and(|t| now >= t))
         {
             guard.remove(key.as_ref());
             Ok(None)
@@ -127,11 +114,10 @@ impl Cache {
         }
     }
 
-    /// Insert or replace `key` with `entry`. Returns the previous entry if one existed,
-    /// `None` if `key` is new.
+    /// Insert or replace `key`, returning whatever was there before.
     ///
-    /// An entry whose `absolute_ttl` is already in the past is accepted as-is — the next
-    /// read drops it lazily. The caller does not need to clock-check before inserting.
+    /// An already-past deadline is accepted as-is and the next read drops it. Callers do
+    /// not need to check the clock first.
     pub fn insert(
         &self,
         key: impl Into<Vec<u8>>,
@@ -141,25 +127,22 @@ impl Cache {
         Ok(guard.insert(key.into(), entry))
     }
 
-    /// Remove `key` from the cache. Returns the removed entry if one existed.
-    /// Does not consult TTL — this is an unconditional delete.
+    /// Remove `key`, returning whatever was there. Unconditional: TTL is not consulted.
     pub fn remove(&self, key: impl AsRef<[u8]>) -> Result<Option<Entry>, CacheError> {
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         Ok(guard.remove(key.as_ref()))
     }
 
-    /// Test for `key`'s presence. Honors lazy expiry: an expired key returns `false`
-    /// and is dropped from the map on its way out, matching what a subsequent
-    /// [`Cache::get`] would see.
+    /// Test for `key`. An expired key returns `false` and is dropped on the way out, so
+    /// this agrees with what [`Cache::get`] would say.
     pub fn contains(&self, key: impl AsRef<[u8]>) -> Result<bool, CacheError> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         let entry = guard.get(key.as_ref());
         match entry {
             Some(Entry {
-                absolute_ttl: Some(t),
+                expires_at: Some(t),
                 ..
-            }) if now >= *t => {
+            }) if Milliseconds::now()? >= *t => {
                 guard.remove(key.as_ref());
                 Ok(false)
             }
@@ -168,107 +151,101 @@ impl Cache {
         }
     }
 
-    /// Set an absolute TTL (UNIX seconds) on an existing key. Returns `true` if the
-    /// TTL was applied — including the immediate-deletion case where the timestamp is
-    /// already past and `key` existed. Returns `false` if `key` was missing.
+    /// Put a deadline on an existing key. `true` if it was applied, `false` if `key` was
+    /// missing.
     ///
-    /// A past timestamp triggers immediate removal rather than storing an
-    /// already-expired entry. This matches real Redis EXPIREAT semantics and means
-    /// the lazy-expiry path doesn't have to handle a guaranteed-stale case.
-    pub fn set_absolute_ttl(
+    /// A past timestamp deletes the key immediately rather than storing a
+    /// guaranteed-stale entry, and still reports `true`. That matches real Redis
+    /// EXPIREAT, and it spares the lazy path a case it would otherwise have to handle.
+    pub fn set_expires_at(
         &self,
         key: impl AsRef<[u8]>,
-        absolute_ttl: u64,
+        expires_at: Milliseconds,
     ) -> Result<bool, CacheError> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        if now >= absolute_ttl {
+        if Milliseconds::now()? >= expires_at {
             return Ok(self.remove(key)?.is_some());
         }
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         let Some(entry) = guard.get_mut(key.as_ref()) else {
             return Ok(false);
         };
-        entry.absolute_ttl = Some(absolute_ttl);
+        entry.expires_at = Some(expires_at);
         Ok(true)
     }
 
-    /// Query the absolute TTL for `key`. The double `Option` carries three distinct
-    /// states:
+    /// Query the deadline on `key`. The nested `Option` carries three states:
     ///
-    /// - `Ok(None)` — `key` is missing (or was expired and just got swept here).
-    /// - `Ok(Some(None))` — `key` exists but has no TTL set.
-    /// - `Ok(Some(Some(t)))` — `key` exists with absolute UNIX timestamp `t`.
+    /// - `Ok(None)`, `key` is missing, or was expired and just got swept here.
+    /// - `Ok(Some(None))`, `key` exists with no TTL.
+    /// - `Ok(Some(Some(t)))`, `key` expires at UNIX millisecond `t`.
     ///
-    /// Honors lazy expiry: if the stored TTL has passed, the entry is removed and the
-    /// function returns `Ok(None)`.
-    pub fn get_absolute_ttl(
+    /// A passed deadline removes the entry and reports `Ok(None)`.
+    pub fn get_expires_at(
         &self,
         key: impl AsRef<[u8]>,
-    ) -> Result<Option<Option<u64>>, CacheError> {
+    ) -> Result<Option<Option<Milliseconds>>, CacheError> {
         let guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
-        let Some(Entry { absolute_ttl, .. }) = guard.get(key.as_ref()) else {
+        let Some(Entry { expires_at, .. }) = guard.get(key.as_ref()) else {
             return Ok(None);
         };
-        let ttl = absolute_ttl.to_owned();
+        let expires_at = expires_at.to_owned();
         drop(guard);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        if ttl.is_some_and(|t| now >= t) {
+        let now = Milliseconds::now()?;
+        if expires_at.is_some_and(|t| now >= t) {
             self.remove(key)?;
             return Ok(None);
         }
-        Ok(Some(ttl))
+        Ok(Some(expires_at))
     }
 
-    /// Query the relative TTL (seconds remaining) for `key`. Same three-state shape as
-    /// [`Cache::get_absolute_ttl`]:
+    /// Time remaining on `key`, in milliseconds. Same three states as
+    /// [`Cache::get_expires_at`]:
     ///
-    /// - `Ok(None)` — `key` missing or just-expired.
-    /// - `Ok(Some(None))` — `key` exists with no TTL.
-    /// - `Ok(Some(Some(n)))` — `n` seconds remaining (saturating; can't underflow).
+    /// - `Ok(None)`, `key` missing or just expired.
+    /// - `Ok(Some(None))`, `key` exists with no TTL.
+    /// - `Ok(Some(Some(n)))`, `n` millis left. Saturating, so it can't underflow.
     ///
-    /// Drives the wire `TTL` command reply: `:-2` / `:-1` / `:n`.
-    pub fn get_relative_ttl(
+    /// Feeds the `TTL` reply (`:-2`, `:-1`, `:n`), which reports seconds and so has to
+    /// divide.
+    pub fn time_to_live(
         &self,
         key: impl AsRef<[u8]>,
-    ) -> Result<Option<Option<u64>>, CacheError> {
-        let absolute_ttl = match self.get_absolute_ttl(key.as_ref())? {
+    ) -> Result<Option<Option<Milliseconds>>, CacheError> {
+        let expires_at = match self.get_expires_at(key.as_ref())? {
             None => return Ok(None),
             Some(None) => return Ok(Some(None)),
             Some(Some(t)) => t,
         };
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-        Ok(Some(Some(absolute_ttl.saturating_sub(now))))
+        Ok(Some(Some(expires_at.saturating_sub(Milliseconds::now()?))))
     }
 
-    /// Drop the TTL on `key` (keep the value). Returns `true` if a TTL was actually
-    /// removed, `false` if `key` is missing or already had no TTL.
-    ///
-    /// Drives `PERSIST`: `:1` when a TTL was cleared, `:0` otherwise.
+    /// Drop the TTL on `key` but keep the value. `false` if `key` is missing or had no
+    /// TTL to begin with. Feeds `PERSIST`.
     pub fn remove_ttl(&self, key: impl AsRef<[u8]>) -> Result<bool, CacheError> {
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         let Some(entry) = guard.get_mut(key.as_ref()) else {
             return Ok(false);
         };
-        if entry.absolute_ttl.is_some() {
-            entry.absolute_ttl = None;
+        if entry.expires_at.is_some() {
+            entry.expires_at = None;
             Ok(true)
         } else {
             Ok(false)
         }
     }
 
-    /// Sweep all expired entries. Returns the count of keys removed. Called by the
-    /// background sweeper thread in `inbound::server` on a periodic tick.
+    /// Sweep every expired entry, returning how many went. The sweeper thread in
+    /// `inbound::server` calls this on a tick.
     ///
-    /// The lock is held for the full scan-and-delete pass. At current scale the sweep
-    /// is microseconds; if it ever starts to hurt tail latency, switch to a
-    /// snapshot-then-evict pattern with a TTL re-check during the eviction phase.
+    /// The lock is held for the whole scan-and-delete pass. At this scale that's
+    /// microseconds. If it ever starts hurting tail latency, snapshot the expired keys
+    /// first and re-check each TTL during eviction.
     pub fn remove_expired(&self) -> Result<usize, CacheError> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let now = Milliseconds::now()?;
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         let expired: Vec<Vec<u8>> = guard
             .iter()
-            .filter(|(_, Entry { absolute_ttl, .. })| absolute_ttl.is_some_and(|t| now >= t))
+            .filter(|(_, Entry { expires_at, .. })| expires_at.is_some_and(|t| now >= t))
             .map(|(key, _)| key.to_owned())
             .collect();
         for key in expired.iter() {
@@ -278,64 +255,60 @@ impl Cache {
     }
 
     pub fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, CacheError> {
-        use ReadCommand as R;
-        use WriteCommand as W;
-        let outcome = match command {
-            CacheCommand::Read(R::Get { key }) => match self.get(key)? {
-                Some(Entry { value, .. }) => CO::Value(Some(value)),
-                None => CO::Value(None),
+        Ok(match command {
+            CacheCommand::Read(ReadCommand::Get { key }) => match self.get(key)? {
+                Some(Entry { value, .. }) => CommandOutcome::Value(Some(value)),
+                None => CommandOutcome::Value(None),
             },
-            CacheCommand::Read(R::Exists { key }) => CO::Integer(self.contains(key)? as i64),
-            CacheCommand::Read(R::Ttl { key }) => CO::Ttl(match self.get_relative_ttl(key)? {
-                None => TtlOutcome::KeyNotFound,
-                Some(None) => TtlOutcome::TtlNotFound,
-                Some(Some(ttl)) => TtlOutcome::Some(ttl),
-            }),
-            CacheCommand::Write(W::Set {
+            CacheCommand::Read(ReadCommand::Exists { key }) => {
+                CommandOutcome::Integer(self.contains(key)? as i64)
+            }
+            // TTL reports whole seconds, rounded up so a just-set 60s TTL reads back as
+            // 60 rather than 59. A PTTL arm would hand back the Milliseconds untouched.
+            CacheCommand::Read(ReadCommand::Ttl { key }) => {
+                CommandOutcome::Ttl(match self.time_to_live(key)? {
+                    None => TtlOutcome::KeyNotFound,
+                    Some(None) => TtlOutcome::TtlNotFound,
+                    Some(Some(ttl)) => TtlOutcome::Some(ttl.to_seconds_rounded_up()),
+                })
+            }
+            // A fresh Entry is what clears any TTL the key already had, so plain SET gets
+            // Redis's default behavior for free.
+            CacheCommand::Write(WriteCommand::Set {
                 key,
                 value,
-                options,
+                expires_at,
             }) => {
-                self.insert(key.as_slice(), Entry::new(value.as_slice(), None))?;
-                if let Some(options) = options {
-                    match options {
-                        SetOptions::Ex(relative_ttl) => {
-                            todo!()
-                        }
-                        SetOptions::Px(relative_ttl) => {
-                            todo!()
-                        }
-                        SetOptions::ExAt(absolute_ttl) => {
-                            todo!()
-                        }
-                        SetOptions::PxAt(absolute_ttl) => {
-                            todo!()
-                        }
-                    }
-                }
-                CO::Ok
+                self.insert(key.as_slice(), Entry::new(value.as_slice(), *expires_at))?;
+                CommandOutcome::Ok
             }
-            CacheCommand::Write(W::Delete { key }) => CO::Bool(self.remove(key)?.is_some()),
-            CacheCommand::Write(W::ExpireAt { key, absolute_ttl }) => {
-                CO::Bool(self.set_absolute_ttl(key, *absolute_ttl)?)
+            CacheCommand::Write(WriteCommand::Delete { key }) => {
+                CommandOutcome::Bool(self.remove(key)?.is_some())
             }
-            CacheCommand::Write(W::Persist { key }) => CO::Bool(self.remove_ttl(key)?),
-        };
-        Ok(outcome)
+            CacheCommand::Write(WriteCommand::ExpireAt { key, expires_at }) => {
+                CommandOutcome::Bool(self.set_expires_at(key, *expires_at)?)
+            }
+            CacheCommand::Write(WriteCommand::Persist { key }) => {
+                CommandOutcome::Bool(self.remove_ttl(key)?)
+            }
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::time::Seconds;
 
     // ---------- helpers ----------
 
-    fn now() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+    fn now() -> Milliseconds {
+        Milliseconds::now().unwrap()
+    }
+
+    /// A deadline `secs` from now.
+    fn in_secs(secs: u64) -> Milliseconds {
+        now().saturating_add(Seconds::new(secs).into())
     }
 
     // ---------- Entry ----------
@@ -346,7 +319,7 @@ mod tests {
             Entry::new("foo", None),
             Entry {
                 value: b"foo".to_vec(),
-                absolute_ttl: None
+                expires_at: None
             }
         );
     }
@@ -354,10 +327,10 @@ mod tests {
     #[test]
     fn entry_constructor_with_ttl() {
         assert_eq!(
-            Entry::new("foo", Some(123)),
+            Entry::new("foo", Some(Milliseconds::new(123))),
             Entry {
                 value: b"foo".to_vec(),
-                absolute_ttl: Some(123)
+                expires_at: Some(Milliseconds::new(123))
             }
         );
     }
@@ -380,7 +353,7 @@ mod tests {
     #[test]
     fn get_hit_future_ttl_returns_entry() {
         let cache = Cache::default();
-        let future = now() + 3600;
+        let future = in_secs(3600);
         cache
             .insert("foo", Entry::new("bar", Some(future)))
             .unwrap();
@@ -393,7 +366,9 @@ mod tests {
     #[test]
     fn get_hit_expired_returns_none_and_removes() {
         let cache = Cache::default();
-        cache.insert("foo", Entry::new("bar", Some(1))).unwrap();
+        cache
+            .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
+            .unwrap();
         assert_eq!(cache.get("foo").unwrap(), None);
         // Verify the lazy expiry actually removed it.
         assert!(!cache.contains("foo").unwrap());
@@ -430,7 +405,7 @@ mod tests {
     fn insert_replaces_value_and_ttl() {
         let cache = Cache::default();
         cache
-            .insert("foo", Entry::new("old", Some(now() + 100)))
+            .insert("foo", Entry::new("old", Some(in_secs(100))))
             .unwrap();
         cache.insert("foo", Entry::new("new", None)).unwrap();
         assert_eq!(cache.get("foo").unwrap(), Some(Entry::new("new", None)));
@@ -478,7 +453,7 @@ mod tests {
     fn contains_hit_future_ttl_returns_true() {
         let cache = Cache::default();
         cache
-            .insert("foo", Entry::new("bar", Some(now() + 3600)))
+            .insert("foo", Entry::new("bar", Some(in_secs(3600))))
             .unwrap();
         assert!(cache.contains("foo").unwrap());
     }
@@ -486,20 +461,22 @@ mod tests {
     #[test]
     fn contains_hit_expired_returns_false_and_removes() {
         let cache = Cache::default();
-        cache.insert("foo", Entry::new("bar", Some(1))).unwrap();
+        cache
+            .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
+            .unwrap();
         assert!(!cache.contains("foo").unwrap());
         // Subsequent direct lookups confirm the entry is gone.
         assert_eq!(cache.get("foo").unwrap(), None);
     }
 
-    // ---------- set_absolute_ttl ----------
+    // ---------- set_expires_at ----------
 
     #[test]
-    fn set_absolute_ttl_existing_key_future_returns_true_and_sets() {
+    fn set_expires_at_existing_key_future_returns_true_and_sets() {
         let cache = Cache::default();
         cache.insert("foo", Entry::new("bar", None)).unwrap();
-        let future = now() + 3600;
-        assert!(cache.set_absolute_ttl("foo", future).unwrap());
+        let future = in_secs(3600);
+        assert!(cache.set_expires_at("foo", future).unwrap());
         assert_eq!(
             cache.get("foo").unwrap(),
             Some(Entry::new("bar", Some(future)))
@@ -507,105 +484,113 @@ mod tests {
     }
 
     #[test]
-    fn set_absolute_ttl_missing_key_future_returns_false() {
+    fn set_expires_at_missing_key_future_returns_false() {
         let cache = Cache::default();
-        assert!(!cache.set_absolute_ttl("missing", now() + 3600).unwrap());
+        assert!(!cache.set_expires_at("missing", in_secs(3600)).unwrap());
     }
 
     #[test]
-    fn set_absolute_ttl_past_existing_key_removes_and_returns_true() {
+    fn set_expires_at_past_existing_key_removes_and_returns_true() {
         let cache = Cache::default();
         cache.insert("foo", Entry::new("bar", None)).unwrap();
-        assert!(cache.set_absolute_ttl("foo", 0).unwrap());
+        assert!(cache.set_expires_at("foo", Milliseconds::new(0)).unwrap());
         assert_eq!(cache.get("foo").unwrap(), None);
     }
 
     #[test]
-    fn set_absolute_ttl_past_missing_key_returns_false() {
+    fn set_expires_at_past_missing_key_returns_false() {
         let cache = Cache::default();
-        assert!(!cache.set_absolute_ttl("missing", 0).unwrap());
+        assert!(
+            !cache
+                .set_expires_at("missing", Milliseconds::new(0))
+                .unwrap()
+        );
     }
 
     #[test]
-    fn set_absolute_ttl_overwrites_existing_ttl() {
+    fn set_expires_at_overwrites_existing_ttl() {
         let cache = Cache::default();
         cache
-            .insert("foo", Entry::new("bar", Some(now() + 100)))
+            .insert("foo", Entry::new("bar", Some(in_secs(100))))
             .unwrap();
-        let new_ttl = now() + 7200;
-        assert!(cache.set_absolute_ttl("foo", new_ttl).unwrap());
-        assert_eq!(cache.get_absolute_ttl("foo").unwrap(), Some(Some(new_ttl)));
+        let new_ttl = in_secs(7200);
+        assert!(cache.set_expires_at("foo", new_ttl).unwrap());
+        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(new_ttl)));
     }
 
-    // ---------- get_absolute_ttl ----------
+    // ---------- get_expires_at ----------
 
     #[test]
-    fn get_absolute_ttl_missing_key_returns_none() {
+    fn get_expires_at_missing_key_returns_none() {
         let cache = Cache::default();
-        assert_eq!(cache.get_absolute_ttl("missing").unwrap(), None);
+        assert_eq!(cache.get_expires_at("missing").unwrap(), None);
     }
 
     #[test]
-    fn get_absolute_ttl_no_ttl_returns_some_none() {
+    fn get_expires_at_no_ttl_returns_some_none() {
         let cache = Cache::default();
         cache.insert("foo", Entry::new("bar", None)).unwrap();
-        assert_eq!(cache.get_absolute_ttl("foo").unwrap(), Some(None));
+        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(None));
     }
 
     #[test]
-    fn get_absolute_ttl_future_returns_some_some_timestamp() {
+    fn get_expires_at_future_returns_some_some_timestamp() {
         let cache = Cache::default();
-        let future = now() + 3600;
+        let future = in_secs(3600);
         cache
             .insert("foo", Entry::new("bar", Some(future)))
             .unwrap();
-        assert_eq!(cache.get_absolute_ttl("foo").unwrap(), Some(Some(future)));
+        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(future)));
     }
 
     #[test]
-    fn get_absolute_ttl_expired_removes_and_returns_none() {
+    fn get_expires_at_expired_removes_and_returns_none() {
         let cache = Cache::default();
-        cache.insert("foo", Entry::new("bar", Some(1))).unwrap();
-        assert_eq!(cache.get_absolute_ttl("foo").unwrap(), None);
+        cache
+            .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
+            .unwrap();
+        assert_eq!(cache.get_expires_at("foo").unwrap(), None);
         // Confirm the lazy expiry physically removed the entry.
         assert!(!cache.contains("foo").unwrap());
     }
 
-    // ---------- get_relative_ttl ----------
+    // ---------- time_to_live ----------
 
     #[test]
-    fn get_relative_ttl_missing_key_returns_none() {
+    fn time_to_live_missing_key_returns_none() {
         let cache = Cache::default();
-        assert_eq!(cache.get_relative_ttl("missing").unwrap(), None);
+        assert_eq!(cache.time_to_live("missing").unwrap(), None);
     }
 
     #[test]
-    fn get_relative_ttl_no_ttl_returns_some_none() {
+    fn time_to_live_no_ttl_returns_some_none() {
         let cache = Cache::default();
         cache.insert("foo", Entry::new("bar", None)).unwrap();
-        assert_eq!(cache.get_relative_ttl("foo").unwrap(), Some(None));
+        assert_eq!(cache.time_to_live("foo").unwrap(), Some(None));
     }
 
     #[test]
-    fn get_relative_ttl_future_returns_remaining_seconds() {
+    fn time_to_live_future_returns_remaining_millis() {
         let cache = Cache::default();
-        let future = now() + 3600;
+        let future = in_secs(3600);
         cache
             .insert("foo", Entry::new("bar", Some(future)))
             .unwrap();
-        let remaining = match cache.get_relative_ttl("foo").unwrap() {
+        let remaining = match cache.time_to_live("foo").unwrap() {
             Some(Some(t)) => t,
             other => panic!("expected Some(Some(_)), got {:?}", other),
         };
-        // Should be ~3600s; allow some slack for clock tick during the call.
-        assert!((3590_u64..=3600).contains(&remaining));
+        // ~3600s of millis, with slack for the clock ticking during the call.
+        assert!((3_590_000..=3_600_000).contains(&remaining.get()));
     }
 
     #[test]
-    fn get_relative_ttl_expired_returns_none() {
+    fn time_to_live_expired_returns_none() {
         let cache = Cache::default();
-        cache.insert("foo", Entry::new("bar", Some(1))).unwrap();
-        assert_eq!(cache.get_relative_ttl("foo").unwrap(), None);
+        cache
+            .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
+            .unwrap();
+        assert_eq!(cache.time_to_live("foo").unwrap(), None);
     }
 
     // ---------- remove_ttl ----------
@@ -614,10 +599,10 @@ mod tests {
     fn remove_ttl_had_ttl_returns_true_and_clears() {
         let cache = Cache::default();
         cache
-            .insert("foo", Entry::new("bar", Some(now() + 100)))
+            .insert("foo", Entry::new("bar", Some(in_secs(100))))
             .unwrap();
         assert!(cache.remove_ttl("foo").unwrap());
-        assert_eq!(cache.get_absolute_ttl("foo").unwrap(), Some(None));
+        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(None));
     }
 
     #[test]
@@ -637,7 +622,7 @@ mod tests {
     fn remove_ttl_keeps_value_intact() {
         let cache = Cache::default();
         cache
-            .insert("foo", Entry::new("bar", Some(now() + 100)))
+            .insert("foo", Entry::new("bar", Some(in_secs(100))))
             .unwrap();
         cache.remove_ttl("foo").unwrap();
         assert_eq!(cache.get("foo").unwrap(), Some(Entry::new("bar", None)));
@@ -654,8 +639,12 @@ mod tests {
     #[test]
     fn remove_expired_drops_expired_keys() {
         let cache = Cache::default();
-        cache.insert("a", Entry::new("v", Some(1))).unwrap();
-        cache.insert("b", Entry::new("v", Some(1))).unwrap();
+        cache
+            .insert("a", Entry::new("v", Some(Milliseconds::new(1))))
+            .unwrap();
+        cache
+            .insert("b", Entry::new("v", Some(Milliseconds::new(1))))
+            .unwrap();
         assert_eq!(cache.remove_expired().unwrap(), 2);
         assert!(!cache.contains("a").unwrap());
         assert!(!cache.contains("b").unwrap());
@@ -665,7 +654,7 @@ mod tests {
     fn remove_expired_keeps_future_keys() {
         let cache = Cache::default();
         cache
-            .insert("a", Entry::new("v", Some(now() + 3600)))
+            .insert("a", Entry::new("v", Some(in_secs(3600))))
             .unwrap();
         assert_eq!(cache.remove_expired().unwrap(), 0);
         assert!(cache.contains("a").unwrap());
@@ -693,8 +682,8 @@ mod tests {
     fn exists(key: impl Into<Vec<u8>>) -> CacheCommand {
         ReadCommand::exists(key).into()
     }
-    fn expire_at(key: impl Into<Vec<u8>>, absolute_ttl: u64) -> CacheCommand {
-        WriteCommand::expire_at(key, absolute_ttl).into()
+    fn expire_at(key: impl Into<Vec<u8>>, expires_at: Milliseconds) -> CacheCommand {
+        WriteCommand::expire_at(key, expires_at).into()
     }
     fn ttl(key: impl Into<Vec<u8>>) -> CacheCommand {
         ReadCommand::ttl(key).into()
@@ -725,7 +714,9 @@ mod tests {
     #[test]
     fn execute_get_expired_returns_value_none() {
         let cache = Cache::default();
-        cache.insert("foo", Entry::new("bar", Some(1))).unwrap();
+        cache
+            .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
+            .unwrap();
         assert!(matches!(
             cache.execute(&get("foo")).unwrap(),
             CommandOutcome::Value(None)
@@ -794,7 +785,7 @@ mod tests {
         let cache = Cache::default();
         cache.insert("foo", Entry::new("bar", None)).unwrap();
         assert!(matches!(
-            cache.execute(&expire_at("foo", now() + 3600)).unwrap(),
+            cache.execute(&expire_at("foo", in_secs(3600))).unwrap(),
             CommandOutcome::Bool(true)
         ));
     }
@@ -803,7 +794,7 @@ mod tests {
     fn execute_expire_at_missing_returns_bool_false() {
         let cache = Cache::default();
         assert!(matches!(
-            cache.execute(&expire_at("missing", now() + 3600)).unwrap(),
+            cache.execute(&expire_at("missing", in_secs(3600))).unwrap(),
             CommandOutcome::Bool(false)
         ));
     }
@@ -831,11 +822,11 @@ mod tests {
     fn execute_ttl_with_ttl_returns_ttl_some() {
         let cache = Cache::default();
         cache
-            .insert("foo", Entry::new("bar", Some(now() + 3600)))
+            .insert("foo", Entry::new("bar", Some(in_secs(3600))))
             .unwrap();
         match cache.execute(&ttl("foo")).unwrap() {
             CommandOutcome::Ttl(TtlOutcome::Some(t)) => {
-                assert!((3590_u64..=3600).contains(&t));
+                assert!((3590..=3600).contains(&t.get()));
             }
             other => panic!("expected Ttl(Some), got {:?}", other),
         }
@@ -845,7 +836,7 @@ mod tests {
     fn execute_persist_had_ttl_returns_bool_true() {
         let cache = Cache::default();
         cache
-            .insert("foo", Entry::new("bar", Some(now() + 3600)))
+            .insert("foo", Entry::new("bar", Some(in_secs(3600))))
             .unwrap();
         assert!(matches!(
             cache.execute(&persist("foo")).unwrap(),
@@ -875,10 +866,14 @@ mod tests {
     #[test]
     fn remove_expired_mixed() {
         let cache = Cache::default();
-        cache.insert("expired_a", Entry::new("v", Some(1))).unwrap();
-        cache.insert("expired_b", Entry::new("v", Some(1))).unwrap();
         cache
-            .insert("future", Entry::new("v", Some(now() + 3600)))
+            .insert("expired_a", Entry::new("v", Some(Milliseconds::new(1))))
+            .unwrap();
+        cache
+            .insert("expired_b", Entry::new("v", Some(Milliseconds::new(1))))
+            .unwrap();
+        cache
+            .insert("future", Entry::new("v", Some(in_secs(3600))))
             .unwrap();
         cache.insert("no_ttl", Entry::new("v", None)).unwrap();
         assert_eq!(cache.remove_expired().unwrap(), 2);

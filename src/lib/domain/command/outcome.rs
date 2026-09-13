@@ -1,8 +1,12 @@
+use crate::domain::time::Seconds;
+
+/// The three things `TTL` can say about a key, before the wire turns them into
+/// `:-2`, `:-1`, or `:n`.
 #[derive(Debug)]
 pub enum TtlOutcome {
     KeyNotFound,
     TtlNotFound,
-    Some(u64),
+    Some(Seconds),
 }
 
 #[derive(Debug)]
