@@ -326,7 +326,8 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
         let (mut rh, mut wh) = self.split();
         let mut handles = Vec::<JoinHandle<()>>::new();
 
-        // writer thread
+        // writer thread. The shutdown check only runs between messages, since `recv()`
+        // parks; the real exit signal is the sender dropping when the reader half goes.
         let write_shutdown = shutdown_signal.clone();
         handles.push(spawn(move || {
             loop {
@@ -407,6 +408,12 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
                 eprintln!("failed to unsubscribe: {}", e)
             }
         });
+
+        // Drop the read half, and with it this session's `Sender`, before joining. The
+        // writer thread is parked inside `recv()`, which only returns once every sender is
+        // gone; it never loops back to its own shutdown check. Holding `rh` across the join
+        // deadlocks shutdown for as long as a client stays connected.
+        drop(rh);
 
         for h in handles {
             let _ = h.join();
