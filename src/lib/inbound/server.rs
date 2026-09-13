@@ -1,23 +1,20 @@
 //! TCP server and lifecycle. Owns the accept loop, the shared [`Cache`], and the
-//! background threads (persistence ticker, TTL sweeper, stdin shutdown listener).
+//! background threads.
 //!
-//! ## Thread topology
+//! ## Threads
 //!
-//! - **main thread** — accept loop, spawns per-connection [`Session`] threads.
-//! - **persistence thread** — calls `cache.persist` every 10s, plus a final persist on
-//!   shutdown.
-//! - **sweeper thread** — calls `cache.remove_expired` every 10s for active TTL eviction.
-//! - **shutdown thread** — blocks on stdin; EOF / `quit` / `exit` flips the shared flag.
-//! - **session threads** — one per accepted connection, joined on shutdown.
+//! The main thread runs the accept loop and spawns one [`Session`] thread per connection.
+//! A persistence thread snapshots every 10s and once more on the way out. A sweeper
+//! thread calls `remove_expired` on the same tick. A shutdown thread blocks on stdin and
+//! flips the shared flag on EOF, `quit`, or `exit`.
 //!
-//! All long-running threads hold an `Arc<AtomicBool>` shutdown flag and check it on a
-//! 100ms-tick budget so shutdown latency is bounded. `JoinHandle`s are collected and
-//! pruned via `is_finished()` while the server runs, and joined fully on exit so no
-//! work is silently dropped.
+//! Every long-running thread holds the same `Arc<AtomicBool>` and checks it every 100ms,
+//! which bounds how long shutdown takes. `JoinHandle`s are pruned with `is_finished()`
+//! while the server runs and joined on exit, so nothing gets dropped silently.
 //!
-//! The listener is set non-blocking so the accept loop polls the shutdown flag without
-//! getting stuck inside `accept()`. A 50ms sleep on `WouldBlock` keeps the loop from
-//! burning a CPU when no clients are connecting.
+//! The listener is non-blocking so the accept loop can poll the flag instead of parking
+//! inside `accept()`. The 50ms sleep on `WouldBlock` is what keeps that from spinning a
+//! core when nobody is connecting.
 
 use crate::{
     domain::{
@@ -39,15 +36,15 @@ use std::{
 /// Address the server binds for client connections.
 const BIND_ADDRESS: &str = "127.0.0.1:3000";
 
-/// Zero-sized handle exposing [`Server::run`]. The server itself is just a function;
-/// the struct exists so callers have a stable `Server::run` entry point.
+/// Zero-sized handle. The server is really just a function; this exists so callers have
+/// a stable `Server::run` to call.
 pub struct Server;
 impl Server {
-    /// Start the server. Blocks until shutdown is signaled (stdin EOF / `quit` / `exit`),
-    /// then joins every spawned thread before returning.
+    /// Start the server. Blocks until shutdown is signaled, then joins every spawned
+    /// thread before returning.
     ///
-    /// Returns `Err` only on a fatal setup error (bind failure, snapshot load failure).
-    /// Per-connection or per-thread errors are logged but do not bubble out.
+    /// `Err` only on fatal setup: a failed bind or a snapshot that won't load.
+    /// Per-connection errors are logged and stay put.
     pub fn run() -> anyhow::Result<()> {
         let persister = Persister::initialize()?;
         let cache = Cache::new(persister.snapshot.load()?);

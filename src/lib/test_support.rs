@@ -1,4 +1,4 @@
-//! Shared test helpers — fakes, RAII temp files, and writer adapters used by the unit
+//! Shared test helpers: fakes, RAII temp files, and writer adapters used by the unit
 //! tests across modules. Compiled only under `#[cfg(test)]`.
 
 use crate::domain::{
@@ -62,7 +62,7 @@ pub struct TempPath {
 }
 
 impl TempPath {
-    /// Build a fresh, unique temp path with the given prefix. Does not create the file —
+    /// Build a fresh, unique temp path with the given prefix. Does not create the file;
     /// caller decides whether to open it via [`PersisterInner`] or directly.
     pub fn new(prefix: &str) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);

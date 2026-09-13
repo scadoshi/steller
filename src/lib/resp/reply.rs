@@ -1,4 +1,4 @@
-//! Outbound RESP — the [`Reply`] enum the server emits and the [`SimpleInner`] newtype
+//! Outbound RESP: the [`Reply`] enum the server emits and the [`SimpleInner`] newtype
 //! that guards RESP's "no CR/LF in simple frames" invariant at construction time.
 
 use std::{
@@ -26,8 +26,8 @@ pub enum SimpleInnerError {
 ///
 /// Three constructors are exposed:
 ///
-/// - [`SimpleInner::ok`] / [`SimpleInner::pong`] — trusted constants used in normal replies.
-/// - [`SimpleInner::sanitized`] — for arbitrary error message bytes; strips `\r`/`\n`
+/// - [`SimpleInner::ok`] and [`SimpleInner::pong`], trusted constants for normal replies.
+/// - [`SimpleInner::sanitized`], for arbitrary error message bytes. Strips `\r` and `\n`
 ///   defensively instead of returning a `Result` (errors crossing this boundary should
 ///   never themselves be a source of new errors).
 #[derive(Debug, Clone, PartialEq)]
@@ -64,7 +64,7 @@ impl SimpleInner {
 
     /// Strip any `\r` or `\n` bytes from `bytes` and wrap the result. Use this when
     /// the payload comes from a `Display`-formatted error or any other source where
-    /// CR/LF is plausible — guarantees a valid frame without forcing the caller to
+    /// CR/LF is plausible. Guarantees a valid frame without forcing the caller to
     /// handle a `Result`.
     pub fn sanitized(bytes: impl Into<Vec<u8>>) -> Self {
         let bytes = bytes
@@ -80,19 +80,19 @@ impl SimpleInner {
 /// shape this server emits today.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reply {
-    /// `+<payload>\r\n` — e.g. `+OK` or `+PONG`.
+    /// `+<payload>\r\n`, such as `+OK` or `+PONG`.
     SimpleString(SimpleInner),
-    /// `-<payload>\r\n` — e.g. `-ERR unknown command`.
+    /// `-<payload>\r\n`, such as `-ERR unknown command`.
     SimpleError(SimpleInner),
-    /// `$<len>\r\n<bytes>\r\n` — binary-safe value reply (e.g. GET hit, PING with message).
+    /// `$<len>\r\n<bytes>\r\n`, the binary-safe value reply. A GET hit, or PING with a message.
     BulkString(Vec<u8>),
-    /// `$-1\r\n` — the RESP "no such key" sentinel returned by GET on a miss.
+    /// `$-1\r\n`, the RESP "no such key" sentinel GET returns on a miss.
     NullBulk,
-    /// `:<n>\r\n` — used for boolean-as-int replies (EXISTS, DEL, EXPIRE, PERSIST) and
+    /// `:<n>\r\n`, used for boolean-as-int replies (EXISTS, DEL, EXPIRE, PERSIST) and
     /// for TTL's `-2`/`-1`/`n` ladder.
     Integer(i64),
     /// `*<len>\r\n` followed by each element serialized in turn. RESP arrays are
-    /// heterogeneous, so elements are themselves [`Reply`]s — used for pub/sub acks
+    /// heterogeneous, so elements are themselves [`Reply`]s. Used for pub/sub acks
     /// (`["subscribe", channel, count]`) and message pushes (`["message", channel, payload]`),
     /// and reused by MULTI/EXEC later.
     Array(Vec<Reply>),
@@ -149,7 +149,7 @@ impl Reply {
     }
 }
 
-/// Several independent top-level RESP frames sent back to back — *not* a single array.
+/// Several independent top-level RESP frames sent back to back, *not* a single array.
 /// A command like `SUBSCRIBE a b` produces one frame per channel; this batches them so they
 /// serialize concatenated, with no enclosing array header.
 #[derive(Debug, Clone)]
@@ -166,7 +166,7 @@ impl Replies {
         Ok(())
     }
 
-    /// Serialize every frame into one flat buffer — concatenated, no wrapping header.
+    /// Serialize every frame into one flat buffer, concatenated with no wrapping header.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.inner.iter().flat_map(|r| r.to_bytes()).collect()
     }
@@ -284,9 +284,12 @@ mod tests {
     #[test]
     fn write_to_array_nested() {
         let mut buf = Vec::new();
-        Reply::Array(vec![Reply::Array(vec![Reply::Integer(1)]), Reply::Integer(2)])
-            .write_to(&mut buf)
-            .unwrap();
+        Reply::Array(vec![
+            Reply::Array(vec![Reply::Integer(1)]),
+            Reply::Integer(2),
+        ])
+        .write_to(&mut buf)
+        .unwrap();
         assert_eq!(buf, b"*2\r\n*1\r\n:1\r\n:2\r\n");
     }
 
