@@ -1,8 +1,10 @@
-# diprotodon project context
+# steller project context
 
 ## Name
 
-The diprotodon was a giant extinct marsupial, basically a hippo-sized wombat, that roamed Australia until around 40,000 years ago. The Rust version of this project gets the dignified ancient-giant name. The Go sibling is `wombat`, diprotodon's goofy modern cousin. Same suborder, Vombatiformes.
+Steller's jay, the loud blue corvid all over the Pacific Northwest. It mimics red-tailed hawks well enough to clear a feeder, which is the same trick this plays on `redis-cli`.
+
+Named alongside `chickadee`, the sibling storage engine. Both birds from the same forest.
 
 ## What this is
 
@@ -26,9 +28,9 @@ Phased milestones (full detail in `context/plan.md`):
 
 ## Sibling repo
 
-`~/Projects/wombat`, the same feature ladder ported to Go. Don't copy code between them; the *translation* is the point.
+`chickadee` is a separate LSM storage engine in Rust (WAL, memtable, SSTable, bloom filters, compaction). Steller is deliberately *not* LSM. Redis is in-memory first, and persistence here buys durability rather than being the storage itself. Different design center, different project.
 
-Related: `~/Projects/nighthawk` is a separate LSM-style storage engine in Rust (WAL, memtable, SSTable, bloom filters, compaction). Diprotodon is deliberately *not* LSM. Redis is in-memory first, and persistence there is durability rather than storage. Different design center, different project.
+A Go port was planned once and is not happening. Any reference to `wombat` in older notes is dead.
 
 ## Discipline rules
 

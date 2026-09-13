@@ -1,4 +1,4 @@
-# diprotodon progress
+# steller progress
 
 Where the project actually is: milestone status, decisions made, gotchas surfaced, what's next.
 
@@ -12,7 +12,7 @@ GET / SET / DEL / EXISTS / EXPIRE / EXPIREAT / TTL / PERSIST / PING (with option
 
 **Testing posture.** 237 unit tests passing. Frame parser, Command-from-Frame, Reply serializer, Crlf, and SessionReader all have unit tests. `Cache` has a comprehensive unit suite (every public method, lazy-expiry, past-TTL semantics, bulk remove-expired) plus per-variant coverage of `Cache::execute`. The new persistence layer is fully covered: `Snapshot` round-trip (incl. atomic temp+rename, missing-file error), `Aof` (append → exact RESP bytes, replay, torn-tail tolerance, malformed-frame error, clear), and `Persister` (append + snapshot-then-clear checkpoint, post-snapshot logging resumes). `Service` tests verify `execute` never logs and `execute_logged` appends iff mutating. `Session::execute` has per-variant wire-byte assertions and `get_command` has happy-path + bad-frame + EOF coverage. The `CommandOutcome → Reply` mapping is exhaustively tested. Every error path on every command has explicit coverage in `resp/command.rs`. Tests grouped under `// ---------- name ----------` section headers for navigability. Shared fakes (`RecordingRepo`, `SharedWriter`, `TempPath` RAII temp-file helper) live in `src/lib/test_support.rs` behind `#[cfg(test)]`, with no `tempfile` crate.
 
-**Strategic phase shift.** From here forward, work is allocated by *what's novel vs. what's rehearsed*, not by milestone order. The user has already shipped LSM-style persistence (WAL + memtable + SSTable + compaction + bloom filters) in `~/Projects/nighthawk`. That makes append-only-log mechanics rehearsed muscle, so AI-assisted is fine. The unrehearsed pieces (pub/sub fan-out, MULTI/EXEC, async migration) get hand-written.
+**Strategic phase shift.** From here forward, work is allocated by *what's novel vs. what's rehearsed*, not by milestone order. The user has already shipped LSM-style persistence (WAL + memtable + SSTable + compaction + bloom filters) in `chickadee`. That makes append-only-log mechanics rehearsed muscle, so AI-assisted is fine. The unrehearsed pieces (pub/sub fan-out, MULTI/EXEC, async migration) get hand-written.
 
 ## Testing next up
 
@@ -136,7 +136,7 @@ without converting.
 
 ## Hand-coding vs AI-assist allocation
 
-This is the strategic split going forward. The user has already shipped LSM persistence in nighthawk; remaining milestones get sorted by whether the *concept* is rehearsed or novel.
+This is the strategic split going forward. The user has already shipped LSM persistence in chickadee; remaining milestones get sorted by whether the *concept* is rehearsed or novel.
 
 ### Worth hand-writing (novel muscle)
 
@@ -147,9 +147,9 @@ This is the strategic split going forward. The user has already shipped LSM pers
 - **Pub/Sub fan-out (M5).** Different concurrency shape than request/response. mpsc-per-subscriber vs. broadcast tradeoffs, slow-subscriber handling, subscription registry under contention. Easier after async lands (tokio broadcast > std::sync::mpsc fan-out).
 - **MULTI/EXEC (M6).** First per-session state machine the codebase has. Lock-once-across-the-queue is the atomicity story; the AOF-envelope decision is the interesting secondary call (preserve atomicity on replay vs. flatten and lose it). Decoupled from async; can land before or after.
 
-### AI-jet (rehearsed in nighthawk or mechanical extension)
+### AI-jet (rehearsed in chickadee or mechanical extension)
 
-- **AOF base path.** Append every state-mutating command, fsync, replay on startup. Same shape as nighthawk's WAL-to-memtable replay with `Command` swapped for `Entry`. Mechanical.
+- **AOF base path.** Append every state-mutating command, fsync, replay on startup. Same shape as chickadee's WAL-to-memtable replay with `Command` swapped for `Entry`. Mechanical.
 - **File atomicity.** Tempfile + rename. Known.
 - **Background task scaffolding.** Periodic-loop spawn pattern is already in `server.rs`.
 - **More commands.** INCR, DECR, MGET, APPEND, STRLEN. Proven extensible in <14 minutes per command.

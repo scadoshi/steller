@@ -2,7 +2,7 @@
 //! line on stderr and a non-zero exit is not used (the loop returns `Ok` on clean
 //! shutdown via stdin EOF / `quit` / `exit`).
 
-use diprotodon::inbound::server::Server;
+use steller::inbound::server::Server;
 
 fn main() {
     if let Err(e) = Server::run() {

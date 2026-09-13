@@ -67,7 +67,7 @@ impl TempPath {
     pub fn new(prefix: &str) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "diprotodon_{}_{}_{}",
+            "steller_{}_{}_{}",
             prefix,
             std::process::id(),
             id

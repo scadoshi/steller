@@ -1,4 +1,4 @@
-//! diprotodon, a minimal Redis-compatible KV server.
+//! steller, a minimal Redis-compatible KV server.
 //!
 //! Speaks RESP over TCP, so real `redis-cli` clients work. In-memory store with disk
 //! durability, lazy and active expiry, graceful shutdown.

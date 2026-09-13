@@ -1,12 +1,16 @@
-# diprotodon
+# steller
 
 A minimal Redis-compatible in-memory key-value server in Rust. Hand-written from the wire protocol up.
 
 Speaks RESP over TCP, so real `redis-cli` clients work: ping, get, set, delete, check existence, set relative or absolute TTLs, query them, persist keys, and subscribe to channels. Data survives restarts on a snapshot baseline plus an append-only command log. Shutdown is stdin EOF or `quit`/`exit`.
 
-## Why "diprotodon"
+## Why "steller"
 
-The diprotodon was a giant marsupial, basically a hippo-sized wombat, that roamed Australia until around 40,000 years ago. Lumbering and ancient. The Rust version of this project gets the dignified extinct-giant name; the Go sibling (`wombat`) gets the goofy modern-cousin one. Same suborder, different size.
+Steller's jay is the loud blue corvid all over the Pacific Northwest. It is a good mimic, and its party trick is imitating a red-tailed hawk well enough to clear a feeder.
+
+That is what this does. It speaks Redis's protocol convincingly enough that `redis-cli` never notices it is talking to 6,000 lines of my Rust instead.
+
+The sibling storage engine is `chickadee`, another bird from the same forest. Chickadees cache thousands of seeds and grow extra hippocampus every autumn to remember where they put them, which is roughly a storage engine's job description.
 
 ## Status
 
@@ -102,7 +106,7 @@ src/
 
 ## Sibling
 
-A Go port of the same feature ladder lives in the `wombat` repo. Same suborder, different language, different lessons. The translation between them is the point, so code is never copied across.
+`chickadee` is the other half: an LSM storage engine (WAL, memtable, SSTable, bloom filters, compaction). Between them they cover both sides of how a production KV system gets built. This one is in-memory first, where persistence buys durability. That one is on-disk first, where persistence is the whole point.
 
 ## Development context
 
