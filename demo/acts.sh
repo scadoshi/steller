@@ -5,6 +5,19 @@
 
 CAP=0.1; SRV=0.2; A=0.3; B=0.4   # pane addresses, set after layout
 
+# A short prompt for the demo panes only, set before capture starts so the command
+# that sets it never appears. The default prompt is 31 characters of username and
+# host, which is a quarter of a pane once the font is big enough to read in a GIF.
+# %1~ tracks the directory, so it stays right when an act cds elsewhere.
+set_prompt() {
+  # PROMPT_EOL_MARK is the reverse-video % zsh prints when output ends mid-line.
+  # Harmless in daily use, distracting at the top of every pane in a recording.
+  tmux send-keys -t "$1" "export PS1='%1~ \$ ' PROMPT_EOL_MARK=''" Enter
+  tmux send-keys -t "$1" 'clear' Enter
+  sleep 0.15
+  tmux clear-history -t "$1"   # drop the scrollback too, or the old prompt shows through
+}
+
 build_layout() {
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   rm -f "$CAPTION_FILE"; : > "$CAPTION_FILE"
@@ -30,7 +43,7 @@ build_layout() {
   tmux select-pane -t "$A"   -T 'client A'
   tmux select-pane -t "$B"   -T 'client B'
 
-  for p in "$SRV" "$A" "$B"; do tmux send-keys -t "$p" 'clear' Enter; done
+  for p in "$SRV" "$A" "$B"; do set_prompt "$p"; done
   tmux send-keys -t "$CAP" "source demo/lib.sh; caption_loop" Enter
   sleep 0.6
 }
@@ -60,6 +73,7 @@ want_two_clients() {
   if [ "$1" = "yes" ] && [ "$have" -lt 4 ]; then
     tmux split-window -v -l 50% -t "$SESSION":0.2
     tmux select-pane -t "$SESSION":0.3 -T 'client B'
+    set_prompt "$SESSION":0.3
     B="$SESSION":0.3
   elif [ "$1" = "no" ] && [ "$have" -ge 4 ]; then
     tmux kill-pane -t "$SESSION":0.3 2>/dev/null || true
