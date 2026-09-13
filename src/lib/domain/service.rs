@@ -1,11 +1,10 @@
-//! The domain service — the orchestrator that sits behind the [`CacheService`] port.
+//! The orchestrator behind the [`CacheService`] port.
 //!
-//! [`Service`] is the single place that knows how a command becomes both an in-memory
-//! effect *and* a durable one. It holds the shared [`Cache`] and a [`CacheRepository`]
-//! handle, and composes them: apply to the cache, then (for mutations) append to the log.
+//! [`Service`] is the one place that knows how a command becomes both an in-memory effect
+//! and a durable one: apply to the cache, then append to the log if it mutated anything.
 //!
-//! It's generic over `CR: CacheRepository` so the concrete persister is a plug-in — the
-//! service depends only on the port, and tests can substitute a recording fake.
+//! Generic over `CR: CacheRepository`, so the concrete persister is a plug-in and tests
+//! can substitute a recording fake.
 
 use crate::domain::{
     cache::Cache,
@@ -13,9 +12,8 @@ use crate::domain::{
     ports::{CacheRepository, CacheService, ServiceError},
 };
 
-/// Command orchestrator. Owns the shared cache and a repository handle, and is itself
-/// cheaply [`Clone`]-able (both fields are shared handles) so every session thread can
-/// hold its own copy pointing at the same cache and log.
+/// Command orchestrator. Both fields are shared handles, so cloning is cheap and every
+/// session thread can hold a copy pointing at the same cache and log.
 #[derive(Clone)]
 pub struct Service<CR: CacheRepository> {
     cache: Cache,
@@ -23,16 +21,15 @@ pub struct Service<CR: CacheRepository> {
 }
 
 impl<CR: CacheRepository> Service<CR> {
-    /// Wire a service from a shared cache and a repository. Both are shared handles, so
-    /// this is a cheap composition, not a deep copy.
+    /// Wire a service from a shared cache and a repository.
     pub fn new(cache: Cache, cache_repo: CR) -> Self {
         Self { cache, cache_repo }
     }
 }
 
 impl<CR: CacheRepository> CacheService for Service<CR> {
-    /// Run a command against the cache only. No persistence — this is the primitive the
-    /// replay path uses so rebuilding from the log doesn't re-write the log.
+    /// Run a command against the cache only. No persistence, so rebuilding from the log
+    /// doesn't re-write the log.
     fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, ServiceError> {
         let outcome = self.cache.execute(command)?;
         Ok(outcome)
@@ -40,12 +37,11 @@ impl<CR: CacheRepository> CacheService for Service<CR> {
 
     /// Run a command and, if it is a [`CacheCommand::Write`], append it to the log.
     ///
-    /// Reads and writes are already distinguished by the [`CacheCommand`] variant, so the
-    /// command is executed first and then logged only on the `Write` arm. Ordering matters:
-    /// the cache effect and the log append must land in the same order across concurrent
-    /// writers, or replay would diverge from the live cache. Note the cache lock and the log
-    /// lock are taken independently here, so a single lock spanning apply+append (or a
-    /// single-writer model) is what would fully close that window under heavy concurrency.
+    /// The [`CacheCommand`] variant already tells reads from writes, so there is no verb
+    /// matching here. Ordering matters: the cache effect and the log append have to land in
+    /// the same order across concurrent writers or replay diverges from the live cache. The
+    /// two locks are taken independently, so that window isn't fully closed. A single lock
+    /// spanning both, or a single-writer model, is what would close it.
     ///
     /// [`CacheCommand::Write`]: crate::domain::command::cache::CacheCommand::Write
     fn execute_logged(&self, command: CacheCommand) -> Result<CommandOutcome, ServiceError> {
@@ -60,6 +56,7 @@ impl<CR: CacheRepository> CacheService for Service<CR> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::time::Milliseconds;
     use crate::{
         domain::{
             cache::Entry,
@@ -89,16 +86,45 @@ mod tests {
     #[test]
     fn execute_set_writes_to_cache() {
         let (svc, cache, _) = build();
-        svc.execute(&WriteCommand::set("foo", "bar").into()).unwrap();
+        svc.execute(&WriteCommand::set("foo", "bar", None).into())
+            .unwrap();
         assert_eq!(cache.get("foo").unwrap(), Some(Entry::new("bar", None)));
+    }
+
+    #[test]
+    fn execute_set_with_deadline_writes_it_through() {
+        let (svc, cache, _) = build();
+        let deadline = Milliseconds::now()
+            .unwrap()
+            .saturating_add(Milliseconds::new(60_000));
+        svc.execute(&WriteCommand::set("foo", "bar", Some(deadline)).into())
+            .unwrap();
+        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(deadline)));
+    }
+
+    // A plain SET replaces the whole Entry, which is how it clears an existing TTL.
+    #[test]
+    fn execute_plain_set_clears_an_existing_ttl() {
+        let (svc, cache, _) = build();
+        let deadline = Milliseconds::now()
+            .unwrap()
+            .saturating_add(Milliseconds::new(60_000));
+        cache
+            .insert("foo", Entry::new("bar", Some(deadline)))
+            .unwrap();
+        svc.execute(&WriteCommand::set("foo", "baz", None).into())
+            .unwrap();
+        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(None));
     }
 
     #[test]
     fn execute_does_not_append_to_repo() {
         let (svc, _, repo) = build();
-        svc.execute(&WriteCommand::set("foo", "bar").into()).unwrap();
+        svc.execute(&WriteCommand::set("foo", "bar", None).into())
+            .unwrap();
         svc.execute(&WriteCommand::delete("foo").into()).unwrap();
-        svc.execute(&WriteCommand::expire("foo", 60).into()).unwrap();
+        svc.execute(&WriteCommand::expire_at("foo", Milliseconds::new(u64::MAX)).into())
+            .unwrap();
         assert!(repo.appended.lock().unwrap().is_empty());
     }
 
@@ -107,13 +133,14 @@ mod tests {
     #[test]
     fn execute_logged_set_appends() {
         let (svc, _, repo) = build();
-        svc.execute_logged(WriteCommand::set("foo", "bar").into())
+        svc.execute_logged(WriteCommand::set("foo", "bar", None).into())
             .unwrap();
         let log = repo.appended.lock().unwrap();
         assert_eq!(log.len(), 1);
         assert!(matches!(
             &log[0],
-            WriteCommand::Set { key, value } if key == b"foo" && value == b"bar"
+            WriteCommand::Set { key, value, expires_at: None }
+                if key == b"foo" && value == b"bar"
         ));
     }
 
@@ -127,29 +154,16 @@ mod tests {
     }
 
     #[test]
-    fn execute_logged_expire_appends() {
-        let (svc, cache, repo) = build();
-        cache.insert("foo", Entry::new("bar", None)).unwrap();
-        svc.execute_logged(WriteCommand::expire("foo", 60).into())
-            .unwrap();
-        let log = repo.appended.lock().unwrap();
-        assert!(matches!(
-            &log[0],
-            WriteCommand::Expire { key, relative_ttl: 60 } if key == b"foo"
-        ));
-    }
-
-    #[test]
     fn execute_logged_expire_at_appends() {
         let (svc, cache, repo) = build();
         cache.insert("foo", Entry::new("bar", None)).unwrap();
-        svc.execute_logged(WriteCommand::expire_at("foo", u64::MAX).into())
+        svc.execute_logged(WriteCommand::expire_at("foo", Milliseconds::new(u64::MAX)).into())
             .unwrap();
         let log = repo.appended.lock().unwrap();
         assert!(matches!(
             &log[0],
-            WriteCommand::ExpireAt { key, absolute_ttl }
-                if key == b"foo" && *absolute_ttl == u64::MAX
+            WriteCommand::ExpireAt { key, expires_at }
+                if key == b"foo" && expires_at.get() == u64::MAX
         ));
     }
 
@@ -188,7 +202,7 @@ mod tests {
     fn execute_logged_set_returns_ok_outcome() {
         let (svc, _, _) = build();
         assert!(matches!(
-            svc.execute_logged(WriteCommand::set("foo", "bar").into())
+            svc.execute_logged(WriteCommand::set("foo", "bar", None).into())
                 .unwrap(),
             CommandOutcome::Ok
         ));

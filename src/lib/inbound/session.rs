@@ -1,11 +1,12 @@
 //! The per-connection session: read frames, dispatch commands, push replies.
 //!
-//! A [`Session`] owns both socket halves. [`Session::split`] divides it into a [`ReadHalf`]
-//! (parses commands, runs them, and *sends* reply bytes down an mpsc) and a [`WriteHalf`]
-//! (the sole owner of the socket's write end — it drains that mpsc to the wire). This split
-//! is what makes pub/sub work: a `PUBLISH` from any session drops bytes into a subscriber's
-//! mpsc, and that subscriber's `WriteHalf` delivers them out of band while its `ReadHalf` is
-//! still blocked on a client read. [`Session::repl`] wires the two together.
+//! A [`Session`] owns both socket halves until [`Session::split`] divides it. The
+//! [`ReadHalf`] parses and runs commands, then sends reply bytes down an mpsc. The
+//! [`WriteHalf`] owns the socket's write end and drains that mpsc to the wire.
+//!
+//! That split is what makes pub/sub work. A `PUBLISH` from any session drops bytes into a
+//! subscriber's mpsc, and the subscriber's `WriteHalf` delivers them while its `ReadHalf`
+//! is still blocked reading from its own client. [`Session::repl`] wires the two together.
 
 use crate::{
     domain::{
@@ -95,7 +96,7 @@ impl<R: Read> SessionReader<R> {
     }
 }
 
-/// A connected client, owning both socket halves until [`split`](Session::split) divides it.
+/// A connected client, owning both socket halves until [`split`](Session::split) runs.
 #[derive(Debug)]
 pub struct Session<R: Read, W: Write, CS: CacheService> {
     id: u32,
@@ -106,9 +107,9 @@ pub struct Session<R: Read, W: Write, CS: CacheService> {
     global_channels: Channels,
 }
 
-/// The reading side of a split session: owns the parser, the cache service, this session's
-/// id and its subscription set, a handle to the shared [`Channels`] registry, and the
-/// *sending* end of the reply mpsc (replies are queued here, not written to the socket).
+/// The reading side of a split session. Holds the parser, the cache service, this
+/// session's id and subscriptions, a handle to the shared [`Channels`] registry, and the
+/// sending end of the reply mpsc. Replies are queued here, never written to the socket.
 pub struct ReadHalf<R: Read, CS: CacheService> {
     id: u32,
     reader: SessionReader<R>,
@@ -118,8 +119,8 @@ pub struct ReadHalf<R: Read, CS: CacheService> {
     global_channels: Channels,
 }
 
-/// Build a registry [`Subscriber`] from a read half: its id plus a clone of its reply
-/// sender, so a `PUBLISH` fan-out lands directly in this session's outbound mpsc.
+/// Build a registry [`Subscriber`] from a read half. The cloned sender is what lets a
+/// `PUBLISH` fan-out land directly in this session's outbound mpsc.
 impl<R: Read, CS: CacheService> From<&ReadHalf<R, CS>> for Subscriber {
     fn from(value: &ReadHalf<R, CS>) -> Self {
         Subscriber::new(value.id, value.sender.clone())
@@ -127,15 +128,15 @@ impl<R: Read, CS: CacheService> From<&ReadHalf<R, CS>> for Subscriber {
 }
 
 impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
-    /// Queue reply bytes for delivery by pushing them onto the outbound mpsc; the
-    /// [`WriteHalf`] thread drains it to the socket. Errors only if that receiver is gone.
+    /// Queue reply bytes on the outbound mpsc for the [`WriteHalf`] thread to drain.
+    /// Errors only once that receiver is gone.
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
         self.sender.send(bytes)
     }
 
-    /// Read the next complete [`Frame`], reading more bytes when the buffer holds only a
-    /// partial frame. `Ok(None)` signals a clean EOF (client disconnect). A malformed frame
-    /// is answered with a `-ERR` reply and skipped — the session continues.
+    /// Read the next complete [`Frame`], pulling more bytes when the buffer holds only
+    /// part of one. `Ok(None)` is a clean EOF. A malformed frame gets a `-ERR` reply and
+    /// is skipped; the session keeps going.
     pub fn get_frame(&mut self) -> Result<Option<Frame>, ReadHalfError> {
         loop {
             match self.reader.parse_frame() {
@@ -155,8 +156,8 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
         }
     }
 
-    /// Read the next frame and parse it into a [`Command`]. An unparseable command is
-    /// answered with a `-ERR` reply and skipped; `Ok(None)` is a clean EOF.
+    /// Read the next frame and parse it into a [`Command`]. An unparseable command gets
+    /// a `-ERR` reply and is skipped. `Ok(None)` is a clean EOF.
     pub fn get_command(&mut self) -> Result<Option<Command>, ReadHalfError> {
         loop {
             match self.get_frame()?.map(Command::try_from) {
@@ -171,11 +172,13 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
         }
     }
 
-    /// Handle a pub/sub command against the shared registry and this session's subscription
-    /// set, returning the issuer's outcome. The registry mutation runs first (it can fail);
-    /// `subscriptions` is updated only on success, and the cumulative count is read off that
-    /// set. PUBLISH serializes the `["message", channel, payload]` push here, then hands the
-    /// raw bytes to the registry to fan out.
+    /// Handle a pub/sub command against the shared registry and this session's
+    /// subscriptions, returning the issuer's outcome.
+    ///
+    /// The registry mutation runs first because it can fail; `subscriptions` is only
+    /// updated after it succeeds, and the cumulative count comes off that set. PUBLISH
+    /// serializes its `["message", channel, payload]` push here and hands the registry raw
+    /// bytes to fan out.
     pub fn execute_channel_command(
         &mut self,
         command: ChannelCommand,
@@ -197,7 +200,7 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
             }
             ChannelCommand::Unsubscribe { channel_ids } => {
                 // No-arg UNSUBSCRIBE means "every channel this session is in". Snapshot the
-                // set into an owned list first — the loop below mutates `self.subscriptions`.
+                // set into an owned list first, since the loop below mutates it.
                 let targets: Vec<Vec<u8>> = if channel_ids.is_empty() {
                     self.subscriptions.iter().cloned().collect()
                 } else {
@@ -240,9 +243,9 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
         Ok(outcome)
     }
 
-    /// Remove this session from every channel it joined — the disconnect-cleanup net, run
-    /// once after the repl loop ends so no dead senders linger in the registry. Returns a
-    /// per-channel result so one poisoned removal doesn't abort the rest.
+    /// Remove this session from every channel it joined. Runs once after the repl loop
+    /// ends so no dead senders linger in the registry. Results come back per channel so
+    /// one poisoned removal doesn't abort the rest.
     pub fn unsubscribe_from_all(&self) -> Vec<Result<(), ChannelsError>> {
         self.subscriptions
             .iter()
@@ -251,25 +254,25 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
     }
 }
 
-/// The writing side of a split session: the sole owner of the socket's write end. Its
-/// thread blocks on the reply mpsc and writes whatever it receives — command replies from
-/// this session's own [`ReadHalf`] and pub/sub pushes fanned in from other sessions alike.
+/// The writing side of a split session, and the only owner of the socket's write end. Its
+/// thread blocks on the reply mpsc and writes whatever arrives, whether that's a command
+/// reply from its own [`ReadHalf`] or a pub/sub push fanned in from another session.
 pub struct WriteHalf<W: Write + Send> {
     writer: BufWriter<W>,
     receiver: Receiver<Vec<u8>>,
 }
 
 impl<W: Write + Send + 'static> WriteHalf<W> {
-    /// Block until the next buffer of reply bytes is queued. `Err` means every sender has
-    /// been dropped (the session is gone), which ends the writer thread.
+    /// Block until the next buffer of reply bytes arrives. `Err` means every sender is
+    /// gone and the session with them, which ends the writer thread.
     pub fn recv(&self) -> Result<Vec<u8>, RecvError> {
         self.receiver.recv()
     }
 }
 
 impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
-    /// Build a session over a connected stream's read/write halves, the shared cache
-    /// service, and a handle to the shared channel registry. Starts with no subscriptions.
+    /// Build a session over a connected stream's two halves, the shared cache service,
+    /// and a handle to the channel registry. Starts with no subscriptions.
     pub fn new(
         id: u32,
         reader: R,
@@ -290,8 +293,8 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
         }
     }
 
-    /// Consume the session, create the reply mpsc, and hand the read/write fields to the
-    /// two halves — the [`ReadHalf`] keeps the sender, the [`WriteHalf`] the receiver.
+    /// Consume the session, create the reply mpsc, and hand the fields to the two halves.
+    /// The [`ReadHalf`] keeps the sender, the [`WriteHalf`] the receiver.
     pub fn split(self) -> (ReadHalf<R, CS>, WriteHalf<W>) {
         let Session {
             id,
@@ -314,11 +317,12 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
         (rh, wh)
     }
 
-    /// Run the session to completion: spawn the writer thread (drains the reply mpsc to the
-    /// socket) and run the reader loop on this thread. Every loop exit — shutdown signal,
-    /// clean EOF, send failure, or read error — funnels through [`unsubscribe_from_all`] so a
-    /// disconnecting session never leaves dead senders in the registry, then joins the
-    /// writer thread before returning.
+    /// Run the session to completion. Spawns the writer thread to drain the reply mpsc
+    /// and runs the reader loop here.
+    ///
+    /// Every way out of that loop, whether shutdown, clean EOF, a send failure, or a read
+    /// error, funnels through [`unsubscribe_from_all`], so a disconnecting session never
+    /// leaves dead senders behind. The writer thread is joined before this returns.
     ///
     /// [`unsubscribe_from_all`]: ReadHalf::unsubscribe_from_all
     pub fn repl(self, shutdown_signal: Arc<AtomicBool>) -> Result<(), SessionError> {
@@ -326,7 +330,8 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
         let (mut rh, mut wh) = self.split();
         let mut handles = Vec::<JoinHandle<()>>::new();
 
-        // writer thread
+        // writer thread. The shutdown check only runs between messages, since `recv()`
+        // parks; the real exit signal is the sender dropping when the reader half goes.
         let write_shutdown = shutdown_signal.clone();
         handles.push(spawn(move || {
             loop {
@@ -408,6 +413,12 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
             }
         });
 
+        // Drop the read half, and with it this session's `Sender`, before joining. The
+        // writer thread is parked inside `recv()`, which only returns once every sender is
+        // gone; it never loops back to its own shutdown check. Holding `rh` across the join
+        // deadlocks shutdown for as long as a client stays connected.
+        drop(rh);
+
         for h in handles {
             let _ = h.join();
         }
@@ -434,7 +445,10 @@ mod tests {
     fn read_half(
         id: u32,
         channels: Channels,
-    ) -> (ReadHalf<Cursor<Vec<u8>>, TestService>, WriteHalf<SharedWriter>) {
+    ) -> (
+        ReadHalf<Cursor<Vec<u8>>, TestService>,
+        WriteHalf<SharedWriter>,
+    ) {
         let service = Service::new(Cache::default(), RecordingRepo::default());
         let session = Session::new(
             id,
@@ -509,7 +523,7 @@ mod tests {
         let outcome = rh
             .execute_channel_command(ChannelCommand::subscribe(vec![b"foo".to_vec()]))
             .unwrap();
-        // already subscribed — the session set didn't grow
+        // already subscribed, so the session set didn't grow
         assert_eq!(counts(&outcome), vec![1]);
     }
 

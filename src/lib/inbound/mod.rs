@@ -1,7 +1,9 @@
-//! Inbound layer — everything that turns incoming bytes into a [`crate::domain::command::Command`].
+//! Turns incoming bytes into a [`crate::domain::command::Command`].
 //!
-//! - [`server`] — TCP accept loop, thread-per-connection, sweeper/persist/shutdown threads.
-//! - [`session`] — the per-connection REPL: reads bytes, parses frames, dispatches commands.
+//! [`server`] is the accept loop and the background threads. [`session`] is the
+//! per-connection REPL that reads bytes, parses frames, and dispatches.
+//!
+//! The `From` impls below are the other direction: outcome to wire reply.
 
 use crate::{
     domain::command::{
@@ -26,14 +28,16 @@ impl From<CommandOutcome> for Reply {
             Co::Bool(bool) => Self::Integer(bool as i64),
             Co::Ttl(TtlOutcome::KeyNotFound) => Self::Integer(-2),
             Co::Ttl(TtlOutcome::TtlNotFound) => Self::Integer(-1),
-            Co::Ttl(TtlOutcome::Some(ttl)) => Self::Integer(i64::try_from(ttl).unwrap_or(i64::MAX)),
+            Co::Ttl(TtlOutcome::Some(ttl)) => {
+                Self::Integer(i64::try_from(ttl.get()).unwrap_or(i64::MAX))
+            }
             Co::Integer(int) => Self::Integer(int),
         }
     }
 }
 
-/// A concrete channel renders as a bulk string; the null-channel sentinel (no-arg
-/// `UNSUBSCRIBE` while subscribed to nothing) renders as RESP null bulk (`$-1`).
+/// A named channel renders as a bulk string. The null sentinel, which only happens on a
+/// no-arg `UNSUBSCRIBE` while subscribed to nothing, renders as `$-1`.
 fn channel_reply(channel_id: Option<Vec<u8>>) -> Reply {
     match channel_id {
         Some(c) => Reply::BulkString(c),
@@ -42,11 +46,14 @@ fn channel_reply(channel_id: Option<Vec<u8>>) -> Reply {
 }
 
 type Cco = ChannelCommandOutcome;
-/// Map a channel command's outcome to the frames sent back to the *issuing* session.
-/// Subscribe/unsubscribe emit one `["(un)subscribe", channel, count]` array **per channel**
-/// (hence [`Replies`], not a single [`Reply`]); publish emits a single `:N` reached-count.
-/// Note this is only the issuer's acknowledgement — the message *push* to subscribers is
-/// built separately on the publish path and never flows through here.
+/// Map a channel command's outcome to the frames sent back to the issuing session.
+///
+/// Subscribe and unsubscribe emit one `["(un)subscribe", channel, count]` array per
+/// channel, which is why this returns [`Replies`] rather than a single [`Reply`]. Publish
+/// emits one `:N`.
+///
+/// This is only the issuer's acknowledgement. The push to subscribers is built on the
+/// publish path and never comes through here.
 impl From<ChannelCommandOutcome> for Replies {
     fn from(value: ChannelCommandOutcome) -> Self {
         match value {
@@ -90,6 +97,7 @@ impl From<ChannelCommandOutcome> for Replies {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::time::Seconds;
 
     #[test]
     fn value_some_maps_to_bulk_string() {
@@ -162,7 +170,7 @@ mod tests {
     #[test]
     fn ttl_some_maps_to_integer() {
         assert_eq!(
-            Reply::from(Co::Ttl(TtlOutcome::Some(123))),
+            Reply::from(Co::Ttl(TtlOutcome::Some(Seconds::new(123)))),
             Reply::Integer(123)
         );
     }
@@ -170,7 +178,7 @@ mod tests {
     #[test]
     fn ttl_some_overflow_saturates_to_i64_max() {
         assert_eq!(
-            Reply::from(Co::Ttl(TtlOutcome::Some(u64::MAX))),
+            Reply::from(Co::Ttl(TtlOutcome::Some(Seconds::new(u64::MAX)))),
             Reply::Integer(i64::MAX)
         );
     }
@@ -247,7 +255,10 @@ mod tests {
                 Reply::Integer(0),
             ])]
         );
-        assert_eq!(replies.to_bytes(), b"*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n");
+        assert_eq!(
+            replies.to_bytes(),
+            b"*3\r\n$11\r\nunsubscribe\r\n$-1\r\n:0\r\n"
+        );
     }
 
     #[test]

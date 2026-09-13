@@ -1,10 +1,12 @@
 //! The pub/sub subscription registry and message fan-out.
 //!
-//! [`Channels`] maps each channel name to its [`Subscribers`] and is shared by every
-//! session behind an `Arc<Mutex>`. It is cheap to [`Clone`] (a clone shares the inner
-//! `Arc`), so every session holds a handle to the *same* registry. The registry deals
-//! only in raw `Vec<u8>` payloads — RESP framing is the inbound layer's job; here a
-//! published message is just bytes pushed into each subscriber's channel.
+//! [`Channels`] maps each channel name to its [`Subscribers`], behind an `Arc<Mutex>` that
+//! every session shares. Cloning shares the inner `Arc`, so all sessions hold a handle to
+//! the same registry.
+//!
+//! The registry only ever moves raw `Vec<u8>`. RESP framing happens in the inbound layer
+//! before anything gets here, so a published message is just bytes pushed into each
+//! subscriber's channel.
 
 use thiserror::Error;
 
@@ -17,8 +19,8 @@ use std::{
     },
 };
 
-/// One session's delivery endpoint: its id (the registry key) plus the sending half of the
-/// mpsc that the session's `WriteHalf` drains to the socket.
+/// One session's delivery endpoint: its id, which is the registry key, plus the sending
+/// half of the mpsc its `WriteHalf` drains to the socket.
 #[derive(Debug)]
 pub struct Subscriber {
     id: u32,
@@ -31,15 +33,15 @@ impl Subscriber {
         Self { id, sender }
     }
 
-    /// Push raw bytes toward this subscriber's socket. Errors if the receiving `WriteHalf`
-    /// has been dropped (i.e. the session is gone).
+    /// Push raw bytes toward this subscriber's socket. Errors once the receiving
+    /// `WriteHalf` is gone, which means the session is too.
     pub fn send(&self, message: impl Into<Vec<u8>>) -> Result<(), SendError<Vec<u8>>> {
         self.sender.send(message.into())
     }
 }
 
-/// The subscribers of a single channel, keyed by session id so unsubscribe and
-/// disconnect-cleanup are O(1) and a session can't be double-registered to one channel.
+/// The subscribers of one channel, keyed by session id. That keying makes unsubscribe and
+/// disconnect cleanup O(1), and stops a session registering twice to the same channel.
 #[derive(Debug, Default)]
 pub struct Subscribers {
     inner: HashMap<u32, Sender<Vec<u8>>>,
@@ -61,13 +63,13 @@ impl DerefMut for Subscribers {
 /// Errors from registry operations.
 #[derive(Debug, Error)]
 pub enum ChannelsError {
-    /// A thread panicked while holding the registry lock, poisoning the `Mutex`.
+    /// A thread panicked while holding the registry lock.
     #[error("mutex was poisoned")]
     MutexPoisoned,
 }
 
-/// The shared subscription registry: channel name → its [`Subscribers`]. Cloneable; every
-/// clone points at the same inner map via the shared `Arc`.
+/// The shared subscription registry, channel name to [`Subscribers`]. Every clone points
+/// at the same inner map.
 #[derive(Debug, Default, Clone)]
 pub struct Channels {
     channels: Arc<Mutex<HashMap<Vec<u8>, Subscribers>>>,
@@ -80,8 +82,8 @@ impl Channels {
     }
 
     /// Register `subscriber` under `channel_id`, creating the channel on first subscribe.
-    /// Idempotent per session id — re-subscribing the same session replaces its sender. The
-    /// per-session subscription *count* is the caller's bookkeeping, not the registry's.
+    /// Idempotent per session id: re-subscribing replaces that session's sender. Counting
+    /// a session's subscriptions is the caller's bookkeeping, not the registry's.
     pub fn subscribe(
         &self,
         channel_id: impl Into<Vec<u8>>,
@@ -98,9 +100,9 @@ impl Channels {
         Ok(())
     }
 
-    /// Remove this subscriber from `channel_id`, dropping the channel entirely once its
-    /// last subscriber leaves so the map only ever holds live channels. A no-op if the
-    /// channel or subscriber isn't present.
+    /// Remove this subscriber from `channel_id`. The channel itself is dropped once its
+    /// last subscriber leaves, so the map only holds live channels. A no-op if either the
+    /// channel or the subscriber is already gone.
     pub fn unsubscribe(
         &self,
         channel_id: impl AsRef<[u8]>,
@@ -119,9 +121,9 @@ impl Channels {
         Ok(())
     }
 
-    /// Fan `message` out to every subscriber of `channel_id`, returning how many received
-    /// it. Subscribers whose receiver has been dropped (dead sessions) are pruned in
-    /// passing. `message` is delivered verbatim — the caller pre-serializes the RESP push.
+    /// Fan `message` out to every subscriber of `channel_id`, returning how many got it.
+    /// Subscribers whose receiver has been dropped are pruned along the way. The message
+    /// is delivered verbatim, since the caller already serialized the RESP push.
     pub fn publish(
         &self,
         message: impl AsRef<Vec<u8>>,

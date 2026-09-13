@@ -1,7 +1,7 @@
 //! RESP frame parser. Streams `&[u8]` into [`Frame`] values and signals to the caller
 //! when more bytes are needed via [`FrameError::Incomplete`].
 //!
-//! Only two frame shapes are recognized — RESP arrays (`*`) and bulk strings (`$`).
+//! Only two frame shapes are recognized: RESP arrays (`*`) and bulk strings (`$`).
 //! That's the entire surface a client uses to send commands; outbound reply types
 //! (simple strings, errors, integers, null-bulk) live in the outbound layer.
 
@@ -17,7 +17,7 @@ pub enum FrameError {
     /// A bulk-string payload wasn't followed by the required `\r\n`.
     #[error("missing crlf terminator")]
     MissingTerminator,
-    /// The header byte wasn't `*` or `$` — no command-shaped frame can start with it.
+    /// The header byte wasn't `*` or `$`, so no command-shaped frame can start with it.
     #[error("unknown sigil")]
     UnknownSigil,
     /// The header's length bytes didn't form a valid `usize` (bad UTF-8 or non-digit).
@@ -46,7 +46,7 @@ pub enum ParseLengthError {
 
 /// A parsed RESP frame. Only the two shapes a client uses to send commands.
 ///
-/// `BulkString` payloads are arbitrary bytes — the parser does not enforce UTF-8.
+/// `BulkString` payloads are arbitrary bytes. The parser does not enforce UTF-8.
 /// `Array` is recursive (an array of frames), but parsing iterates rather than
 /// recurses, so deeply-nested arrays cannot blow the stack.
 #[derive(Debug, Clone, PartialEq)]
@@ -59,7 +59,7 @@ pub enum Frame {
 
 impl Frame {
     /// Parse one frame from the front of `bytes`. Returns the parsed frame and the
-    /// leftover slice (borrowed from the input — no allocation for the rest-of-buffer).
+    /// leftover slice, which borrows from the input rather than allocating.
     ///
     /// Returns [`FrameError::Incomplete`] when there aren't enough bytes yet. That's
     /// the load-bearing signal the session layer uses to keep reading from the socket
@@ -85,8 +85,8 @@ impl Frame {
     }
 
     /// Parse `len` consecutive frames from `bytes` into a [`Frame::Array`]. Iterative
-    /// (not recursive) so an array of N elements uses O(1) stack regardless of N — the
-    /// guard against `MGET key1..key100000` blowing the stack.
+    /// rather than recursive, so an array of N elements uses O(1) stack no matter how big
+    /// N gets. That is what stops `MGET key1..key100000` blowing the stack.
     pub fn parse_array(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
         let mut vec = Vec::new();
         let mut buf: &[u8] = bytes;
@@ -128,30 +128,44 @@ impl Frame {
     }
 }
 
-type WC = WriteCommand;
-impl From<WC> for Frame {
-    fn from(value: WC) -> Self {
+/// Encode a mutation as the RESP bytes a client would have sent. This is what the AOF
+/// stores, and it is why replay needs no decoder of its own.
+///
+/// Deadlines go out in the millisecond verbs, `PXAT` and `PEXPIREAT`, rather than the
+/// second ones. Those are the forms the parser takes verbatim, so a logged command
+/// round-trips through `Command::try_from` unchanged. Writing `EXPIREAT` here would hand
+/// replay a millisecond value that the seconds arm would multiply a second time.
+///
+/// No clock is read here. Everything being encoded is already absolute.
+impl From<WriteCommand> for Frame {
+    fn from(value: WriteCommand) -> Self {
         match value {
-            WC::Set { key, value } => Frame::Array(vec![
-                Frame::BulkString(b"SET".to_vec()),
-                Frame::BulkString(key),
-                Frame::BulkString(value),
-            ]),
-            WC::Delete { key } => Frame::Array(vec![
+            WriteCommand::Set {
+                key,
+                value,
+                expires_at,
+            } => {
+                let mut parts = vec![
+                    Frame::BulkString(b"SET".to_vec()),
+                    Frame::BulkString(key),
+                    Frame::BulkString(value),
+                ];
+                if let Some(expires_at) = expires_at {
+                    parts.push(Frame::BulkString(b"PXAT".to_vec()));
+                    parts.push(Frame::BulkString(expires_at.get().to_string().into_bytes()));
+                }
+                Frame::Array(parts)
+            }
+            WriteCommand::Delete { key } => Frame::Array(vec![
                 Frame::BulkString(b"DEL".to_vec()),
                 Frame::BulkString(key),
             ]),
-            WC::Expire { key, relative_ttl } => Frame::Array(vec![
-                Frame::BulkString(b"EXPIRE".to_vec()),
+            WriteCommand::ExpireAt { key, expires_at } => Frame::Array(vec![
+                Frame::BulkString(b"PEXPIREAT".to_vec()),
                 Frame::BulkString(key),
-                Frame::BulkString(relative_ttl.to_string().as_bytes().to_vec()),
+                Frame::BulkString(expires_at.get().to_string().into_bytes()),
             ]),
-            WC::ExpireAt { key, absolute_ttl } => Frame::Array(vec![
-                Frame::BulkString(b"EXPIREAT".to_vec()),
-                Frame::BulkString(key),
-                Frame::BulkString(absolute_ttl.to_string().as_bytes().to_vec()),
-            ]),
-            WC::Persist { key } => Frame::Array(vec![
+            WriteCommand::Persist { key } => Frame::Array(vec![
                 Frame::BulkString(b"PERSIST".to_vec()),
                 Frame::BulkString(key),
             ]),

@@ -1,9 +1,9 @@
-//! Append-only command log — the write-ahead log half of the persister.
+//! Append-only command log: the write-ahead log half of the persister.
 //!
 //! The AOF *is* the RESP wire format: each logged command is encoded with the same
 //! `From<WriteCommand> for Frame` + `Frame::write_to` used on the network path, so the
 //! file is byte-for-byte what a client would have sent. That symmetry means replay needs
-//! no special decoder — it reuses `Frame::parse_one` + `Command::try_from`, the exact
+//! no decoder of its own. It reuses `Frame::parse_one` and `Command::try_from`, the exact
 //! inbound parsing path. The log is, in effect, a transcript of every mutation; replay is
 //! "re-send that transcript."
 
@@ -40,8 +40,8 @@ pub enum AofError {
     /// A replayed command failed to apply to the cache.
     #[error(transparent)]
     Cache(#[from] CacheError),
-    /// A replayed frame parsed but didn't lift into a known command — corruption or
-    /// version skew. Fatal: the log is our own, so an uninterpretable entry means the
+    /// A replayed frame parsed but didn't lift into a known command, meaning corruption or
+    /// version skew. Fatal: this log is our own, so an uninterpretable entry means the
     /// rebuild can't be trusted.
     #[error(transparent)]
     Command(#[from] CommandFromFrameError),
@@ -87,11 +87,11 @@ impl Aof {
     /// apply it *in-memory only* (no re-logging).
     ///
     /// Reads the whole file, then walks it frame-by-frame. Stops on a trailing
-    /// [`Incomplete`](FrameError::Incomplete) frame — the expected torn tail from a crash
-    /// mid-append — keeping everything parsed so far. Any *other* parse failure or an
-    /// unknown command is fatal (returns `Err`), because in our own log those signal real
-    /// corruption, not a normal partial write. Runs at startup before clients connect, so
-    /// per-command locking inside `execute` is fine — no concurrency to coordinate.
+    /// [`Incomplete`](FrameError::Incomplete) frame, which is the expected torn tail from a
+    /// crash mid-append, and keeps everything parsed so far. Any *other* parse failure or an
+    /// unknown command is fatal, because in our own log those mean real corruption rather
+    /// than a normal partial write. Runs at startup before clients connect, so
+    /// per-command locking inside `execute` is fine. There is no concurrency to coordinate.
     pub fn replay(&self, cache: &Cache) -> Result<(), AofError> {
         let aof = {
             let mut aof = Vec::<u8>::new();
@@ -133,6 +133,7 @@ impl Aof {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::time::Milliseconds;
     use crate::{domain::cache::Entry, test_support::TempPath};
     use std::{fs, io::Write};
 
@@ -152,26 +153,36 @@ mod tests {
     #[test]
     fn append_writes_resp_frame_to_disk() {
         let (aof, t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"foo".to_vec(),
-            value: b"bar".to_vec(),
-        })
-        .unwrap();
+        aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
         flush(&aof);
         let bytes = fs::read(&t.path).unwrap();
         assert_eq!(bytes, b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
     }
 
+    // A SET carrying a deadline logs it as PXAT, the millisecond verb, because that is
+    // the form the parser reads back without converting.
+    #[test]
+    fn append_writes_set_deadline_as_pxat() {
+        let (aof, t) = fresh();
+        aof.append(WriteCommand::set(
+            "foo",
+            "bar",
+            Some(Milliseconds::new(1_700_000_000_000)),
+        ))
+        .unwrap();
+        flush(&aof);
+        let bytes = fs::read(&t.path).unwrap();
+        assert_eq!(
+            bytes,
+            b"*5\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n$4\r\nPXAT\r\n$13\r\n1700000000000\r\n"
+        );
+    }
+
     #[test]
     fn append_multiple_commands_concatenates() {
         let (aof, t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"a".to_vec(),
-            value: b"1".to_vec(),
-        })
-        .unwrap();
-        aof.append(WriteCommand::Delete { key: b"a".to_vec() })
-            .unwrap();
+        aof.append(WriteCommand::set("a", "1", None)).unwrap();
+        aof.append(WriteCommand::delete("a")).unwrap();
         flush(&aof);
         let bytes = fs::read(&t.path).unwrap();
         let expected = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$1\r\na\r\n";
@@ -191,11 +202,7 @@ mod tests {
     #[test]
     fn replay_applies_set_to_cache() {
         let (aof, _t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"foo".to_vec(),
-            value: b"bar".to_vec(),
-        })
-        .unwrap();
+        aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
         flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
@@ -205,20 +212,9 @@ mod tests {
     #[test]
     fn replay_applies_commands_in_order() {
         let (aof, _t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"foo".to_vec(),
-            value: b"old".to_vec(),
-        })
-        .unwrap();
-        aof.append(WriteCommand::Set {
-            key: b"foo".to_vec(),
-            value: b"new".to_vec(),
-        })
-        .unwrap();
-        aof.append(WriteCommand::Delete {
-            key: b"gone".to_vec(),
-        })
-        .unwrap();
+        aof.append(WriteCommand::set("foo", "old", None)).unwrap();
+        aof.append(WriteCommand::set("foo", "new", None)).unwrap();
+        aof.append(WriteCommand::delete("gone")).unwrap();
         flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
@@ -226,36 +222,46 @@ mod tests {
         assert_eq!(cache.get("gone").unwrap(), None);
     }
 
+    // The deadline has to come back the same size it went in. This is the test that fails
+    // if encoding ever picks a second-granular verb the parser then multiplies.
     #[test]
-    fn replay_applies_expire_at() {
+    fn replay_preserves_a_set_deadline_exactly() {
         let (aof, _t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"foo".to_vec(),
-            value: b"bar".to_vec(),
-        })
-        .unwrap();
-        aof.append(WriteCommand::ExpireAt {
-            key: b"foo".to_vec(),
-            absolute_ttl: u64::MAX,
-        })
-        .unwrap();
+        let deadline = Milliseconds::new(u64::MAX - 1);
+        aof.append(WriteCommand::set("foo", "bar", Some(deadline)))
+            .unwrap();
         flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
-        assert_eq!(cache.get_absolute_ttl("foo").unwrap(), Some(Some(u64::MAX)));
+        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(deadline)));
     }
 
+    // Proves a deadline in the log survives the whole round-trip: encode, disk, parse,
+    // execute.
+    #[test]
+    fn replay_applies_expire_at() {
+        let (aof, _t) = fresh();
+        aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
+        aof.append(WriteCommand::expire_at("foo", Milliseconds::new(u64::MAX)))
+            .unwrap();
+        flush(&aof);
+
+        let cache = Cache::default();
+        aof.replay(&cache).unwrap();
+        assert_eq!(
+            cache.get_expires_at("foo").unwrap(),
+            Some(Some(Milliseconds::new(u64::MAX)))
+        );
+    }
+
+    // A torn tail is what a crash mid-append leaves behind, so replay keeps everything
+    // before it rather than treating the file as corrupt.
     #[test]
     fn replay_trailing_partial_frame_is_tolerated() {
-        // Incomplete trailing frame should stop replay cleanly (Incomplete is the EOF signal).
         let (aof, t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"foo".to_vec(),
-            value: b"bar".to_vec(),
-        })
-        .unwrap();
+        aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
         flush(&aof);
-        // Append a partial frame directly to the file behind the BufWriter.
+        // Write past the BufWriter, straight at the file.
         let mut handle = OpenOptions::new().append(true).open(&t.path).unwrap();
         handle.write_all(b"*3\r\n$3\r\nSET\r\n").unwrap();
         drop(handle);
@@ -280,11 +286,7 @@ mod tests {
     #[test]
     fn clear_truncates_file() {
         let (aof, t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"foo".to_vec(),
-            value: b"bar".to_vec(),
-        })
-        .unwrap();
+        aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
         flush(&aof);
         aof.clear().unwrap();
         assert_eq!(fs::read(&t.path).unwrap().len(), 0);
@@ -293,18 +295,10 @@ mod tests {
     #[test]
     fn clear_allows_subsequent_appends() {
         let (aof, _t) = fresh();
-        aof.append(WriteCommand::Set {
-            key: b"old".to_vec(),
-            value: b"v".to_vec(),
-        })
-        .unwrap();
+        aof.append(WriteCommand::set("old", "v", None)).unwrap();
         flush(&aof);
         aof.clear().unwrap();
-        aof.append(WriteCommand::Set {
-            key: b"new".to_vec(),
-            value: b"v".to_vec(),
-        })
-        .unwrap();
+        aof.append(WriteCommand::set("new", "v", None)).unwrap();
         flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();

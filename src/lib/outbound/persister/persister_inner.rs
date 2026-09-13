@@ -1,11 +1,10 @@
 //! Shared file-handle plumbing for the persistence pieces.
 //!
-//! Both [`Aof`](super::aof::Aof) and [`Snapshot`](super::snapshot::Snapshot) wrap a
-//! `PersisterInner` (via newtype + `Deref`), reusing the same "open a file, guard a
-//! buffered writer, remember the path" machinery without sharing behavior. The writer is
-//! `Arc<Mutex<…>>` so a single underlying file handle is shared across threads and writes
-//! are serialized; the `path` is kept for the read/recovery paths that open their own
-//! transient handles.
+//! [`Aof`](super::aof::Aof) and [`Snapshot`](super::snapshot::Snapshot) both wrap a
+//! `PersisterInner` behind a newtype and `Deref`, reusing the open-a-file-and-guard-a-
+//! writer machinery without sharing any behavior. The writer sits in an `Arc<Mutex>` so
+//! one file handle is shared across threads and writes serialize. The `path` sticks around
+//! for the recovery paths, which open their own transient handles.
 
 use std::{
     fs::{File, OpenOptions, create_dir_all},
@@ -16,9 +15,8 @@ use std::{
 
 type IoError = std::io::Error;
 
-/// A guarded, append-mode writer plus the path it points at. The fields are
-/// `pub(super)` so the `Aof`/`Snapshot` newtypes in sibling modules can reach the writer
-/// and path directly.
+/// A guarded, append-mode writer plus the path it points at. The fields are `pub(super)`
+/// so the newtypes in sibling modules can reach them directly.
 #[derive(Debug, Clone)]
 pub struct PersisterInner {
     pub(super) writer: Arc<Mutex<BufWriter<File>>>,
@@ -27,10 +25,11 @@ pub struct PersisterInner {
 
 impl TryFrom<PathBuf> for PersisterInner {
     type Error = IoError;
-    /// Open the file in **append** mode (creating it, and any missing parent dirs, if
-    /// absent). Append mode is what makes the AOF correct on restart — the write cursor
-    /// starts at end-of-file, so reopening an existing log extends it rather than
-    /// overwriting from offset 0.
+    /// Open the file in append mode, creating it and any missing parent dirs.
+    ///
+    /// Append mode is what makes the AOF correct on restart. The write cursor starts at
+    /// end-of-file, so reopening an existing log extends it instead of overwriting from
+    /// offset 0.
     fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
         if let Some(dir) = value.parent()
             && !dir.as_os_str().is_empty()

@@ -1,22 +1,19 @@
-//! Domain types — the wire- and storage-agnostic heart of the server.
+//! Domain types. Wire- and storage-agnostic.
 //!
-//! - [`cache`] — the in-memory [`cache::Cache`] (Arc-shared KV store with TTL and
-//!   lazy + active expiry). Pure in-memory; durability lives behind the persister.
-//! - [`command`] — the parsed [`command::Command`] enum and its [`command::CommandError`],
-//!   produced by the RESP layer and consumed by the service executor.
-//! - [`ports`] — trait boundaries (`CacheRepository`, `CacheService`) the adapters plug
-//!   into. The domain depends only on these; concrete adapters live in `inbound` /
-//!   `outbound`.
-//! - [`service`] — the [`service::Service`] orchestrator that composes a [`cache::Cache`]
-//!   with a [`ports::CacheRepository`] to execute commands (and optionally log them).
+//! - [`cache`] is the Arc-shared KV store with TTL and lazy plus active expiry. Purely
+//!   in-memory; durability lives behind the persister.
+//! - [`command`] is the parsed [`command::Command`] enum, produced by the RESP layer and
+//!   consumed by the service.
+//! - [`ports`] holds the trait boundaries the adapters plug into.
+//! - [`service`] composes a cache with a repository to execute commands and log them.
+//! - [`time`] owns the clock and the seconds-to-millis conversion.
 //!
-//! Nothing in here knows about TCP, RESP, or files. The inbound layer parses bytes into a
-//! `Command`, the outbound persister appends mutations and snapshots, and the cache only
-//! ever sees domain types. Keeping the boundary tight is what lets the wire format or the
-//! persistence strategy change without touching the core.
+//! Nothing here knows about TCP, RESP, or files. That boundary is what lets the wire
+//! format or the persistence strategy change without touching the core.
 
 pub mod cache;
 pub mod channels;
 pub mod command;
 pub mod ports;
 pub mod service;
+pub mod time;
