@@ -3,3 +3,4 @@
 cache/snapshot
 cache/aof
 cache/snapshot.tmp
+demo/out
