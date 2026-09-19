@@ -20,8 +20,8 @@ use crate::{
     },
 };
 use std::{
-    fs::{File, OpenOptions},
-    io::{BufWriter, Read},
+    fs::File,
+    io::{Read, Write},
     ops::Deref,
 };
 use thiserror::Error;
@@ -117,13 +117,19 @@ impl Aof {
         Ok(())
     }
 
+    /// Empty the log once a snapshot has captured everything in it.
+    ///
+    /// Drain the writer *before* truncating, so nothing still buffered can land in the
+    /// emptied file afterwards. And truncate through the one append-mode handle rather than
+    /// opening a second: a replacement opened without `append` carries a real cursor, and
+    /// the old writer's drop-flush would then hit that stale offset, leaving a hole of NULs
+    /// at the front of the log that replay cannot parse. That hole only appears once more
+    /// than the `BufWriter`'s 8 KiB has gone through since the last clear, which is why no
+    /// small manual session ever saw it and the first benchmark did.
     pub fn clear(&self) -> Result<(), AofError> {
         let mut guard = self.writer.lock().map_err(|_| AofError::MutexPoisoned)?;
-        let cleared = OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&*self.path)?;
-        *guard = BufWriter::new(cleared);
+        guard.flush()?;
+        guard.get_ref().set_len(0)?;
         Ok(())
     }
 }
@@ -135,7 +141,10 @@ mod tests {
         domain::{cache::Entry, time::Milliseconds},
         test_support::TempPath,
     };
-    use std::{fs, io::Write};
+    use std::{
+        fs::{self, OpenOptions},
+        io::Write,
+    };
 
     fn fresh() -> (Aof, TempPath) {
         let temp = TempPath::new("aof");
@@ -304,5 +313,35 @@ mod tests {
         aof.replay(&cache).unwrap();
         assert_eq!(cache.get("old").unwrap(), None);
         assert_eq!(cache.get("new").unwrap(), Some(Entry::new("v", None)));
+    }
+
+    // Regression for the compaction hole. Past 8 KiB the BufWriter has flushed at least
+    // once, so the writer's cursor is off zero and bytes are still pending. A clear that
+    // truncated first, or that swapped in a writer opened without `append`, would flush
+    // those pending bytes into the emptied file at the old offset and leave a NUL hole
+    // replay chokes on. Two rounds, because the old clear replaced the append-mode writer
+    // on the first call and only the second could then punch the hole.
+    #[test]
+    fn clear_after_a_flushed_writer_leaves_no_hole() {
+        let (aof, t) = fresh();
+        for _ in 0..2 {
+            for _ in 0..400 {
+                aof.append(WriteCommand::set("k", "v", None)).unwrap();
+            }
+            aof.clear().unwrap();
+            assert_eq!(
+                fs::read(&t.path).unwrap().len(),
+                0,
+                "log not empty after clear"
+            );
+        }
+        aof.append(WriteCommand::set("after", "v", None)).unwrap();
+        flush(&aof);
+        let bytes = fs::read(&t.path).unwrap();
+        assert!(!bytes.contains(&0), "NUL hole in log");
+        let cache = Cache::default();
+        aof.replay(&cache).unwrap();
+        assert_eq!(cache.get("after").unwrap(), Some(Entry::new("v", None)));
+        assert_eq!(cache.lock().unwrap().len(), 1);
     }
 }
