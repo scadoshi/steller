@@ -32,7 +32,6 @@ use std::{
 use thiserror::Error;
 use wincode::{SchemaRead, SchemaWrite};
 
-/// Errors a [`Cache`] operation can return.
 #[derive(Debug, Error)]
 pub enum CacheError {
     /// A thread panicked while holding the shared mutex. The in-memory state may be
@@ -59,7 +58,6 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Build an [`Entry`] from value bytes plus an optional deadline.
     pub fn new(value: impl Into<Vec<u8>>, expires_at: Option<Milliseconds>) -> Self {
         Self {
             value: value.into(),
@@ -465,7 +463,6 @@ mod tests {
             .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
             .unwrap();
         assert!(!cache.contains("foo").unwrap());
-        // Subsequent direct lookups confirm the entry is gone.
         assert_eq!(cache.get("foo").unwrap(), None);
     }
 
@@ -550,7 +547,6 @@ mod tests {
             .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
             .unwrap();
         assert_eq!(cache.get_expires_at("foo").unwrap(), None);
-        // Confirm the lazy expiry physically removed the entry.
         assert!(!cache.contains("foo").unwrap());
     }
 

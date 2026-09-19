@@ -7,9 +7,8 @@ use std::{
 };
 use thiserror::Error;
 
-/// Errors returned by [`SimpleInner::try_from`] when payload bytes contain a
-/// forbidden character. Simple-string and simple-error frames must not carry `\r` or
-/// `\n` because RESP uses those bytes as the frame terminator.
+/// Simple-string and simple-error payloads must not carry `\r` or `\n`; RESP uses those
+/// bytes as the frame terminator.
 #[derive(Debug, Error)]
 pub enum SimpleInnerError {
     #[error("must not contain a carriage return: (\"\\r\")")]
@@ -20,16 +19,8 @@ pub enum SimpleInnerError {
 
 /// Validated payload for a RESP simple string or simple error.
 ///
-/// Construction enforces the no-CR/LF rule, so once a `SimpleInner` exists it's
-/// guaranteed safe to write between a sigil byte and a `\r\n` terminator. The serializer
-/// in [`Reply::write_to`] relies on that.
-///
-/// Three constructors are exposed:
-///
-/// - [`SimpleInner::ok`] and [`SimpleInner::pong`], trusted constants for normal replies.
-/// - [`SimpleInner::sanitized`], for arbitrary error message bytes. Strips `\r` and `\n`
-///   defensively instead of returning a `Result` (errors crossing this boundary should
-///   never themselves be a source of new errors).
+/// Construction enforces the no-CR/LF rule, so once a `SimpleInner` exists it is safe to
+/// write between a sigil byte and a `\r\n` terminator. [`Reply::to_bytes`] relies on that.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SimpleInner(Vec<u8>);
 
@@ -47,25 +38,21 @@ impl TryFrom<&[u8]> for SimpleInner {
 }
 
 impl SimpleInner {
-    /// Borrow the validated payload bytes for serialization.
     fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
-    /// Trusted constructor for the canonical `+OK\r\n` reply payload.
     pub fn ok() -> Self {
         Self(b"OK".to_vec())
     }
 
-    /// Trusted constructor for the canonical `+PONG\r\n` reply payload.
     pub fn pong() -> Self {
         Self(b"PONG".to_vec())
     }
 
-    /// Strip any `\r` or `\n` bytes from `bytes` and wrap the result. Use this when
-    /// the payload comes from a `Display`-formatted error or any other source where
-    /// CR/LF is plausible. Guarantees a valid frame without forcing the caller to
-    /// handle a `Result`.
+    /// Strips `\r` and `\n` rather than returning a `Result`. This is for
+    /// `Display`-formatted errors and anything else where CR/LF is plausible: an error
+    /// crossing this boundary shouldn't itself become a source of new errors.
     pub fn sanitized(bytes: impl Into<Vec<u8>>) -> Self {
         let bytes = bytes
             .into()
@@ -76,8 +63,7 @@ impl SimpleInner {
     }
 }
 
-/// A RESP reply the server can write back to a client. Variants cover every reply
-/// shape this server emits today.
+/// A RESP reply the server can write back to a client.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reply {
     /// `+<payload>\r\n`, such as `+OK` or `+PONG`.
@@ -93,21 +79,15 @@ pub enum Reply {
     Integer(i64),
     /// `*<len>\r\n` followed by each element serialized in turn. RESP arrays are
     /// heterogeneous, so elements are themselves [`Reply`]s. Used for pub/sub acks
-    /// (`["subscribe", channel, count]`) and message pushes (`["message", channel, payload]`),
-    /// and reused by MULTI/EXEC later.
+    /// (`["subscribe", channel, count]`) and message pushes (`["message", channel, payload]`).
     Array(Vec<Reply>),
 }
 
 impl Reply {
-    /// Serialize this reply onto `w` as RESP bytes. Uses `write_all` so partial writes
-    /// don't leave a half-formed frame on the wire; the caller is expected to flush
-    /// after dispatching a reply (the session does this).
     pub fn write_to(&self, w: &mut impl Write) -> std::io::Result<()> {
         w.write_all(self.to_bytes().as_slice())
     }
 
-    /// Serialize this reply to an owned RESP byte buffer. This is the canonical serializer;
-    /// [`write_to`](Self::write_to) is a thin wrapper that streams these bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut b = Vec::new();
         match self {
@@ -158,7 +138,6 @@ pub struct Replies {
 }
 
 impl Replies {
-    /// Stream every frame, in order, onto `buf`.
     pub fn write_to(&self, buf: &mut impl Write) -> std::io::Result<()> {
         for reply in &self.inner {
             reply.write_to(buf)?;
@@ -166,7 +145,6 @@ impl Replies {
         Ok(())
     }
 
-    /// Serialize every frame into one flat buffer, concatenated with no wrapping header.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.inner.iter().flat_map(Reply::to_bytes).collect()
     }

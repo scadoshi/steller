@@ -11,35 +11,26 @@ use thiserror::Error;
 
 type IoError = std::io::Error;
 
-/// Errors returned by the frame parser.
 #[derive(Debug, Error)]
 pub enum FrameError {
-    /// A bulk-string payload wasn't followed by the required `\r\n`.
     #[error("missing crlf terminator")]
     MissingTerminator,
-    /// The header byte wasn't `*` or `$`, so no command-shaped frame can start with it.
     #[error("unknown sigil")]
     UnknownSigil,
-    /// The header's length bytes didn't form a valid `usize` (bad UTF-8 or non-digit).
     #[error("failed to parse length: {0}")]
     InvalidLength(#[from] ParseLengthError),
-    /// Not enough bytes to finish parsing this frame yet. Caller should read more from
-    /// the socket and try again with the extended buffer.
+    /// Not enough bytes yet. The caller reads more from the socket and retries.
     #[error("incomplete frame")]
     Incomplete,
-    /// Bytes formed a CRLF-terminated header but the header itself is too short to be
-    /// a valid sigil-plus-length pair.
+    /// A CRLF-terminated header too short to hold a sigil plus a length.
     #[error("malformed value")]
     Malformed,
 }
 
-/// Specific failure modes for parsing the length number off a RESP header.
 #[derive(Debug, Error)]
 pub enum ParseLengthError {
-    /// The length bytes weren't valid UTF-8.
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
-    /// The length bytes were UTF-8 but didn't parse as a `usize`.
     #[error(transparent)]
     ParseInt(#[from] ParseIntError),
 }
@@ -58,12 +49,9 @@ pub enum Frame {
 }
 
 impl Frame {
-    /// Parse one frame from the front of `bytes`. Returns the parsed frame and the
-    /// leftover slice, which borrows from the input rather than allocating.
-    ///
-    /// Returns [`FrameError::Incomplete`] when there aren't enough bytes yet. That's
-    /// the load-bearing signal the session layer uses to keep reading from the socket
-    /// before retrying.
+    /// Parse one frame from the front of `bytes`, returning it and the leftover slice.
+    /// [`FrameError::Incomplete`] is the signal the session uses to read more from the
+    /// socket before retrying.
     pub fn parse_one(bytes: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         let Some((header, bytes)) = bytes.split_crlf() else {
             return Err(FrameError::Incomplete);
@@ -99,9 +87,6 @@ impl Frame {
         Ok((Frame::Array(vec), buf))
     }
 
-    /// Parse a bulk string of exactly `len` bytes followed by `\r\n`. Returns
-    /// [`FrameError::MissingTerminator`] if the buffer is too short or the trailing
-    /// `\r\n` is missing.
     pub fn parse_bulk_string(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
         let Some((payload, rest)) = bytes.split_at_checked(len) else {
             return Err(FrameError::MissingTerminator);

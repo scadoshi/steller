@@ -16,7 +16,6 @@ use crate::{
 use std::time::SystemTimeError;
 use thiserror::Error;
 
-/// Pull the next frame and require it to be a bulk string.
 macro_rules! next_bulk {
     ($iter:expr) => {{
         let Some(frame) = $iter.next() else {
@@ -29,7 +28,6 @@ macro_rules! next_bulk {
     }};
 }
 
-/// Parse a bulk string as a `u64`.
 fn parse_u64(bytes: &[u8]) -> Result<u64, CommandFromFrameError> {
     Ok(std::str::from_utf8(bytes)
         .map_err(CommandError::from)?
@@ -37,15 +35,13 @@ fn parse_u64(bytes: &[u8]) -> Result<u64, CommandFromFrameError> {
         .map_err(CommandError::from)?)
 }
 
-/// Errors produced while turning a [`Frame`] into a [`Command`].
 #[derive(Debug, Error)]
 pub enum CommandFromFrameError {
-    /// Verb-level semantic error from the domain layer (wrong arity, unknown verb,
-    /// numeric arg failed to parse, etc.).
+    /// Verb-level: wrong arity, unknown verb, a numeric arg that didn't parse.
     #[error(transparent)]
     CommandError(#[from] CommandError),
-    /// The outer frame wasn't an array of bulk strings, or a nested frame appeared
-    /// where the protocol requires a bulk string (e.g. an array passed as a key).
+    /// The outer frame wasn't an array of bulk strings, or a nested frame turned up where
+    /// a bulk string belongs, such as an array passed as a key.
     #[error("unexpected value; command is made of an array of bulk strings")]
     UnexpectedFrame,
     #[error(transparent)]

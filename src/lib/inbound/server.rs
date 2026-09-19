@@ -33,11 +33,8 @@ use std::{
     time::Duration,
 };
 
-/// Address the server binds for client connections.
 const BIND_ADDRESS: &str = "127.0.0.1:3000";
 
-/// Zero-sized handle. The server is really just a function; this exists so callers have
-/// a stable `Server::run` to call.
 pub struct Server;
 impl Server {
     /// Start the server. Blocks until shutdown is signaled, then joins every spawned

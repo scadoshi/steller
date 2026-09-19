@@ -1,6 +1,5 @@
-//! Binary entry point. Delegates to [`Server::run`]; any error surfaces as a single
-//! line on stderr and a non-zero exit is not used (the loop returns `Ok` on clean
-//! shutdown via stdin EOF / `quit` / `exit`).
+//! Any error from [`Server::run`] prints one line to stderr. The exit code is 0 either
+//! way; a clean shutdown (stdin EOF, `quit`, or `exit`) returns `Ok`.
 
 use steller::inbound::server::Server;
 

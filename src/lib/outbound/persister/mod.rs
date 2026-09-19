@@ -29,16 +29,13 @@ use thiserror::Error;
 
 type IoError = std::io::Error;
 
-/// On-disk path of the append-only command log.
 static AOF_PATH: &str = "cache/aof";
-/// On-disk path of the snapshot dump.
 const SNAPSHOT_PATH: &str = "cache/snapshot";
 
 /// Failure setting up or coordinating the persister itself, as opposed to the AOF- and
 /// snapshot-specific errors. Boxed into [`RepositoryError`] at the boundary.
 #[derive(Debug, Error)]
 pub enum PersisterError {
-    /// I/O failure opening or creating a persistence file.
     #[error(transparent)]
     Io(#[from] IoError),
     /// A writer panicked while holding the cache mutex.

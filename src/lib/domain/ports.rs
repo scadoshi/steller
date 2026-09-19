@@ -21,16 +21,11 @@ use crate::domain::{
 };
 use thiserror::Error;
 
-/// Failure crossing the persistence boundary, in terms the domain can react to rather
-/// than the adapter's own taxonomy.
-///
-/// One opaque catch-all for now. The domain doesn't branch on persistence failure modes
-/// yet, so every adapter error boxes into it. Variants like `Unavailable` or `Corrupt`
-/// get carved out when the service needs to decide on one, not before.
+/// Failure crossing the persistence boundary. One opaque catch-all for now, since the
+/// domain doesn't branch on persistence failure modes yet. Variants like `Unavailable` or
+/// `Corrupt` get carved out when the service needs to decide on one, not before.
 #[derive(Debug, Error)]
 pub enum RepositoryError {
-    /// Opaque catch-all. The adapter boxes any error it has no domain meaning for into
-    /// here; the domain treats it as "persistence failed" without inspecting the cause.
     #[error(transparent)]
     Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -40,9 +35,8 @@ pub enum RepositoryError {
 /// The `Clone + Send + Sync + 'static` bounds let one repository handle be shared across
 /// every session thread and live for the whole process.
 pub trait CacheRepository: Clone + Send + Sync + 'static {
-    /// Durably log one state-mutating command (append to the write-ahead log).
     fn append(&self, command: WriteCommand) -> Result<(), RepositoryError>;
-    /// Snapshot the current cache state to durable storage (and compact the log).
+    /// Snapshot the cache and compact the log.
     fn snapshot(&self, cache: &Cache) -> Result<(), RepositoryError>;
 }
 
@@ -50,19 +44,15 @@ pub trait CacheRepository: Clone + Send + Sync + 'static {
 ///
 /// `execute` only hits the cache, so it can only fail with [`Cache`](ServiceError::Cache).
 /// `execute_logged` also appends, so it can additionally fail with
-/// [`Repository`](ServiceError::Repository). The `#[from]` conversions let `?` lift either
-/// at the call site.
+/// [`Repository`](ServiceError::Repository).
 #[derive(Debug, Error)]
 pub enum ServiceError {
-    /// Cache operation failed during execution.
     #[error(transparent)]
     Cache(#[from] CacheError),
-    /// Persistence failed while logging a mutation.
     #[error(transparent)]
     Repository(#[from] RepositoryError),
     #[error(transparent)]
     Channels(#[from] ChannelsError),
-    /// Opaque catch-all for anything without a more specific service meaning.
     #[error(transparent)]
     Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
 }

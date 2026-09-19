@@ -108,9 +108,8 @@ pub struct Session<R: Read, W: Write, CS: CacheService> {
     global_channels: Channels,
 }
 
-/// The reading side of a split session. Holds the parser, the cache service, this
-/// session's id and subscriptions, a handle to the shared [`Channels`] registry, and the
-/// sending end of the reply mpsc. Replies are queued here, never written to the socket.
+/// The reading side of a split session. Replies are queued on the mpsc here, never
+/// written to the socket.
 pub struct ReadHalf<R: Read, CS: CacheService> {
     id: u32,
     reader: SessionReader<R>,
@@ -185,11 +184,8 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
             ChannelCommand::Subscribe { channel_ids } => {
                 let mut inner = Vec::new();
                 for id in channel_ids {
-                    // update global channel handler
-                    // do this first since it can fail
                     self.global_channels
                         .subscribe(id.clone(), (&*self).into())?;
-                    // update session specific tracker
                     self.subscriptions.insert(id.clone());
                     let subscription_count = self.subscriptions.len();
                     inner.push(SubUnsubInnerEntry::new(id, subscription_count));
@@ -210,10 +206,7 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
                     inner.push(SubUnsubInnerEntry::new_null(self.subscriptions.len()));
                 } else {
                     for id in targets {
-                        // update global channel handler
-                        // do this first since it can fail
                         self.global_channels.unsubscribe(id.clone(), self.id)?;
-                        // update session specific tracker
                         self.subscriptions.remove(&id);
                         let subscription_count = self.subscriptions.len();
                         inner.push(SubUnsubInnerEntry::new(id, subscription_count));
@@ -269,8 +262,6 @@ impl<W: Write + Send + 'static> WriteHalf<W> {
 }
 
 impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
-    /// Build a session over a connected stream's two halves, the shared cache service,
-    /// and a handle to the channel registry. Starts with no subscriptions.
     pub fn new(
         id: u32,
         reader: R,
@@ -291,8 +282,6 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
         }
     }
 
-    /// Consume the session, create the reply mpsc, and hand the fields to the two halves.
-    /// The [`ReadHalf`] keeps the sender, the [`WriteHalf`] the receiver.
     pub fn split(self) -> (ReadHalf<R, CS>, WriteHalf<W>) {
         let Session {
             id,
@@ -348,7 +337,7 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
             }
         }));
 
-        // reader thread
+        // reader loop, on this thread
         let result: Result<(), ReadHalfError> = loop {
             if shutdown_signal.load(Ordering::Relaxed) {
                 break Ok(());

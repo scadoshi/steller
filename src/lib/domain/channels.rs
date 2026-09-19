@@ -28,7 +28,6 @@ pub struct Subscriber {
 }
 
 impl Subscriber {
-    /// Wrap a session id and its mpsc sender as a registry entry.
     pub fn new(id: u32, sender: Sender<Vec<u8>>) -> Self {
         Self { id, sender }
     }
@@ -60,7 +59,6 @@ impl DerefMut for Subscribers {
     }
 }
 
-/// Errors from registry operations.
 #[derive(Debug, Error)]
 pub enum ChannelsError {
     /// A thread panicked while holding the registry lock.
@@ -76,7 +74,6 @@ pub struct Channels {
 }
 
 impl Channels {
-    /// Create an empty registry.
     pub fn new() -> Self {
         Self::default()
     }
