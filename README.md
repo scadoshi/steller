@@ -6,6 +6,22 @@ Speaks RESP over TCP, so real `redis-cli` clients work: ping, get, set, delete, 
 
 ![redis-cli connecting to steller: PING, SET, GET, EXISTS, DEL](demo/demo.gif)
 
+## Benchmarks
+
+`redis-benchmark` against steller and a real Redis 8 on the same laptop. SET throughput by client count, median of three runs. Method, latency percentiles, the high end, and what the first run turned up are in [BENCHMARKS.md](BENCHMARKS.md).
+
+![SET throughput by client count, steller vs Redis](demo/bench.svg)
+
+| clients | steller | Redis 8 |
+| ---: | ---: | ---: |
+| 1 | 52,743 | 15,380 |
+| 4 | 112,613 | 35,286 |
+| 16 | 153,374 | 88,496 |
+| 64 | 140,449 | 146,628 |
+| 256 | 151,976 | 176,678 |
+
+Under about 32 clients a thread blocked in `read()` wakes faster than an event-loop iteration, so steller leads. Past that, a thread per connection around one mutex flattens while Redis keeps climbing, and near 3,000 clients the process hits macOS's thread cap and dies, two threads per client. Pipelined on one connection steller does ~510k/s to Redis's ~216k. Those are the design's tradeoffs, measured rather than asserted.
+
 ## Why "steller"
 
 Steller's jay is the loud blue corvid all over the Pacific Northwest. It is a good mimic, and its party trick is imitating a red-tailed hawk well enough to clear a feeder.
@@ -58,7 +74,7 @@ To shut down cleanly, send EOF (Ctrl-D) or type `quit` / `exit` on the server's 
 
   Two rules keep replay honest. Relative TTLs are made absolute at parse time and have no representation in `WriteCommand`, so a relative deadline can never reach the log. And deadlines are logged in the millisecond verbs (`PXAT`, `PEXPIREAT`) rather than the second ones, because those are the forms the parser reads back without converting. Logging `EXPIREAT` would hand replay a millisecond value that the seconds arm multiplies a second time, pushing every deadline 1000x further out on each restart.
 
-  Recovery loads the snapshot, then replays the log on top. A trailing torn frame from a crash mid-append stops replay cleanly; mid-stream corruption or an unknown command is fatal, because in our own log those mean something is actually wrong. Snapshots are written atomically (temp file, then `rename`) and truncate the log, which is the whole compaction story.
+  Recovery loads the snapshot, then replays the log on top. A trailing torn frame from a crash mid-append stops replay cleanly; mid-stream corruption or an unknown command is fatal, because in our own log those mean something is actually wrong. Snapshots are written atomically (temp file, then `rename`) and truncate the log, which is the whole compaction story. Compaction drains the buffered writer before it truncates, and truncates through the same append-mode handle; the first benchmark run showed what happens otherwise, a hole of NULs the size of the old log ([BENCHMARKS.md](BENCHMARKS.md)).
 - **Split session, which is what makes pub/sub work.** A session owns both socket halves and splits into a `ReadHalf` that queues reply bytes on an mpsc and a `WriteHalf` that solely owns the write end and drains that mpsc. A `PUBLISH` from any session drops bytes into a subscriber's queue, and that subscriber's writer delivers them while its reader is still blocked on its own client.
 
   It's also generic: `Session<R: Read, W: Write, CS: CacheService>` tests against a `Cursor<Vec<u8>>` and a fake service instead of a socket and a real cache.
@@ -68,8 +84,8 @@ To shut down cleanly, send EOF (Ctrl-D) or type `quit` / `exit` on the server's 
   Milliseconds rather than seconds so `PX` and `PXAT` mean something: anyone reaching for them wants sub-second precision, and rounding at the edge would throw away the only reason to use them. `EX`, `PX`, `EXAT`, `PXAT`, and `EXPIRE` all normalize onto that one deadline at parse time, so storage never learns which verb produced it. `TTL` divides back to seconds on the way out, rounding up so a freshly-set 60s TTL reads back as 60 rather than 59.
 
   A past timestamp deletes immediately and returns `1`, matching real Redis. Lazy expiry on every read path drops expired keys on access, and a sweeper thread evicts on a 10s tick.
-- **Graceful shutdown.** One `Arc<AtomicBool>` that every thread watches. The listener is non-blocking with a 50ms throttle on `WouldBlock`, so the accept loop polls the flag instead of parking inside `accept()` and without spinning a core. Stdin EOF, `quit`, or `exit` flips it, which avoids a `ctrlc` dependency. Every thread is collected as a `JoinHandle` and joined before `main` returns, and the background threads check the flag every 100ms so shutdown latency stays bounded.
-- **Error-path test coverage.** Every parser arm has explicit coverage for `TooManyParts`, `NotEnoughParts`, `UnexpectedFrame`, and where applicable `Syntax`, `Utf8`, and `ParseInt` on numeric args. 237 tests at last count.
+- **Graceful shutdown.** One `Arc<AtomicBool>` that every thread watches. The listener blocks in `accept()`, so an idle server costs nothing and a new connection is picked up immediately. To get out of that block, the stdin thread flips the flag (`Release`) and then opens one throwaway connection to the listener's own address; the accept loop sees the flag (`Acquire`) as that connection comes in, drops it, and exits. Stdin EOF, `quit`, or `exit` is the trigger, which avoids a `ctrlc` dependency. Every thread is collected as a `JoinHandle` and joined before `main` returns, and the background threads check the flag every 100ms so shutdown latency stays bounded.
+- **Error-path test coverage.** Every parser arm has explicit coverage for `TooManyParts`, `NotEnoughParts`, `UnexpectedFrame`, and where applicable `Syntax`, `Utf8`, and `ParseInt` on numeric args. 238 tests at last count.
 
 ## Layout
 
