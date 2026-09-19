@@ -93,8 +93,7 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::time::Milliseconds;
-    use crate::test_support::TempPath;
+    use crate::{domain::time::Milliseconds, test_support::TempPath};
 
     fn fresh() -> (Snapshot, TempPath) {
         let temp = TempPath::new("snapshot");

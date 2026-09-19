@@ -2,11 +2,13 @@ pub mod cache;
 pub mod channel;
 pub mod outcome;
 
-use crate::domain::command::{
-    cache::{CacheCommand, read::ReadCommand, write::WriteCommand},
-    channel::ChannelCommand,
+use crate::domain::{
+    command::{
+        cache::{CacheCommand, read::ReadCommand, write::WriteCommand},
+        channel::ChannelCommand,
+    },
+    time::Milliseconds,
 };
-use crate::domain::time::Milliseconds;
 use std::{num::ParseIntError, str::Utf8Error};
 use thiserror::Error;
 

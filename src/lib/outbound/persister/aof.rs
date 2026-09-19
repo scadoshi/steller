@@ -131,8 +131,10 @@ impl Aof {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::time::Milliseconds;
-    use crate::{domain::cache::Entry, test_support::TempPath};
+    use crate::{
+        domain::{cache::Entry, time::Milliseconds},
+        test_support::TempPath,
+    };
     use std::{fs, io::Write};
 
     fn fresh() -> (Aof, TempPath) {

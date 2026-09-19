@@ -56,11 +56,11 @@ impl<CR: CacheRepository> CacheService for Service<CR> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::time::Milliseconds;
     use crate::{
         domain::{
             cache::Entry,
             command::cache::{read::ReadCommand, write::WriteCommand},
+            time::Milliseconds,
         },
         test_support::RecordingRepo,
     };
