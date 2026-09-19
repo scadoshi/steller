@@ -25,7 +25,7 @@ impl From<CommandOutcome> for Reply {
             Co::Ok => Self::SimpleString(SimpleInner::ok()),
             Co::Pong(Some(message)) => Self::SimpleString(SimpleInner::sanitized(message)),
             Co::Pong(None) => Self::SimpleString(SimpleInner::pong()),
-            Co::Bool(bool) => Self::Integer(bool as i64),
+            Co::Bool(bool) => Self::Integer(i64::from(bool)),
             Co::Ttl(TtlOutcome::KeyNotFound) => Self::Integer(-2),
             Co::Ttl(TtlOutcome::TtlNotFound) => Self::Integer(-1),
             Co::Ttl(TtlOutcome::Some(ttl)) => {
@@ -67,7 +67,7 @@ impl From<ChannelCommandOutcome> for Replies {
                     replies.push(Reply::Array(vec![
                         Reply::BulkString(b"subscribe".to_vec()),
                         channel_reply(channel_id),
-                        Reply::Integer(subscription_count as i64),
+                        Reply::Integer(i64::try_from(subscription_count).unwrap_or(i64::MAX)),
                     ]));
                 }
                 Self { inner: replies }
@@ -82,7 +82,7 @@ impl From<ChannelCommandOutcome> for Replies {
                     replies.push(Reply::Array(vec![
                         Reply::BulkString(b"unsubscribe".to_vec()),
                         channel_reply(channel_id),
-                        Reply::Integer(subscription_count as i64),
+                        Reply::Integer(i64::try_from(subscription_count).unwrap_or(i64::MAX)),
                     ]));
                 }
                 Self { inner: replies }

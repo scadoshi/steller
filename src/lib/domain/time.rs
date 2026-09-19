@@ -47,27 +47,27 @@ impl Milliseconds {
 
     /// Current UNIX time.
     ///
-    /// `Duration::as_millis` returns `u128`, so this narrows. It is the only narrowing
-    /// cast in the codebase and it holds until year 584,556,019, when a `u64` millisecond
-    /// count overflows. A deadline crossing the `i64` reply boundary saturates sooner, in
-    /// year 292,278,994. See the `TTL` arm of `Cache::execute`.
+    /// `Duration::as_millis` returns `u128`, so this narrows, saturating at `u64::MAX`
+    /// in year 584,556,019. A deadline crossing the `i64` reply boundary saturates
+    /// sooner, in year 292,278,994. See the `TTL` arm of `Cache::execute`.
     ///
     /// `SystemTime` rather than `Instant` because `Instant` is process-local and these
     /// deadlines outlive the process.
     pub fn now() -> Result<Self, SystemTimeError> {
-        Ok(Self(
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64,
-        ))
+        let millis = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
+        Ok(Self(u64::try_from(millis).unwrap_or(u64::MAX)))
     }
 
     /// Time between two points, floored at zero. Turns a deadline into a remaining
     /// duration without underflowing once the deadline has passed.
+    #[must_use]
     pub fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
 
     /// Offset forward, clamped at `u64::MAX`. This is what makes a relative TTL absolute:
     /// `now + ttl`.
+    #[must_use]
     pub fn saturating_add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))
     }

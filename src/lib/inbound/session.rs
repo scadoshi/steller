@@ -75,6 +75,7 @@ impl<R: Read> SessionReader<R> {
     pub fn read(&mut self) -> std::io::Result<usize> {
         let mut new = [0u8; 1024];
         let len = self.inner.read(&mut new)?;
+        #[expect(clippy::indexing_slicing, reason = "Read guarantees len <= new.len()")]
         self.buf.extend_from_slice(&new[..len]);
         Ok(len)
     }
@@ -82,7 +83,7 @@ impl<R: Read> SessionReader<R> {
     pub fn parse_frame(&mut self) -> Result<Frame, FrameError> {
         match Frame::parse_one(&self.buf) {
             Ok((frame, bytes)) => {
-                let consumed = self.buf.len() - bytes.len();
+                let consumed = self.buf.len().saturating_sub(bytes.len());
                 self.buf.drain(..consumed);
                 Ok(frame)
             }
@@ -145,12 +146,10 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
                     if self.reader.read()? == 0 {
                         return Ok(None);
                     }
-                    continue;
                 }
                 Err(e) => {
-                    let reply = Reply::SimpleError(SimpleInner::sanitized(format!("ERR {}", e)));
+                    let reply = Reply::SimpleError(SimpleInner::sanitized(format!("ERR {e}")));
                     self.sender.send(reply.to_bytes())?;
-                    continue;
                 }
             }
         }
@@ -163,9 +162,8 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
             match self.get_frame()?.map(Command::try_from) {
                 Some(Ok(cmd)) => return Ok(Some(cmd)),
                 Some(Err(e)) => {
-                    let reply = Reply::SimpleError(SimpleInner::sanitized(format!("ERR {}", e)));
+                    let reply = Reply::SimpleError(SimpleInner::sanitized(format!("ERR {e}")));
                     self.sender.send(reply.to_bytes())?;
-                    continue;
                 }
                 None => return Ok(None),
             }
@@ -325,7 +323,7 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
     /// leaves dead senders behind. The writer thread is joined before this returns.
     ///
     /// [`unsubscribe_from_all`]: ReadHalf::unsubscribe_from_all
-    pub fn repl(self, shutdown_signal: Arc<AtomicBool>) -> Result<(), SessionError> {
+    pub fn repl(self, shutdown_signal: &Arc<AtomicBool>) -> Result<(), SessionError> {
         let id = self.id;
         let (mut rh, mut wh) = self.split();
         let mut handles = Vec::<JoinHandle<()>>::new();
@@ -338,15 +336,14 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
                 if write_shutdown.load(Ordering::Relaxed) {
                     break;
                 }
-                match wh.recv() {
-                    Ok(msg) => match wh.writer.write_all(&msg).and_then(|_| wh.writer.flush()) {
-                        Ok(_) => {}
-                        Err(e) => eprintln!("failed to write: {}", e),
-                    },
-                    Err(_) => {
-                        println!("client {} has disconnected", id);
-                        break;
+                if let Ok(msg) = wh.recv() {
+                    match wh.writer.write_all(&msg).and_then(|()| wh.writer.flush()) {
+                        Ok(()) => {}
+                        Err(e) => eprintln!("failed to write: {e}"),
                     }
+                } else {
+                    println!("client {id} has disconnected");
+                    break;
                 }
             }
         }));
@@ -369,7 +366,7 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
                         },
                     );
                     match rh.send(reply.to_bytes()) {
-                        Ok(_) => continue,
+                        Ok(()) => {}
                         Err(e) => break Err(ReadHalfError::Send(e)),
                     }
                 }
@@ -384,32 +381,29 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
                     };
                     let replies = Replies::from(outcome);
                     match rh.send(replies.to_bytes()) {
-                        Ok(_) => continue,
+                        Ok(()) => {}
                         Err(e) => break Err(ReadHalfError::Send(e)),
                     }
                 }
                 Ok(Some(Command::Ping { message })) => {
                     let m = message.unwrap_or(Reply::SimpleString(SimpleInner::pong()).to_bytes());
                     match rh.send(m) {
-                        Ok(_) => continue,
+                        Ok(()) => {}
                         Err(e) => break Err(ReadHalfError::Send(e)),
                     }
                 }
                 Ok(None) => {
-                    println!("client {} disconnected", id);
+                    println!("client {id} disconnected");
                     break Ok(());
                 }
                 Err(ReadHalfError::Io(e))
-                    if matches!(e.kind(), IoErrorKind::TimedOut | IoErrorKind::WouldBlock) =>
-                {
-                    continue;
-                }
+                    if matches!(e.kind(), IoErrorKind::TimedOut | IoErrorKind::WouldBlock) => {}
                 Err(e) => break Err(e),
             }
         };
         rh.unsubscribe_from_all().iter().for_each(|r| {
             if let Err(e) = r {
-                eprintln!("failed to unsubscribe: {}", e)
+                eprintln!("failed to unsubscribe: {e}");
             }
         });
 
@@ -645,7 +639,7 @@ mod tests {
         .unwrap();
 
         let results = rh.unsubscribe_from_all();
-        assert!(results.iter().all(|r| r.is_ok()));
+        assert!(results.iter().all(std::result::Result::is_ok));
 
         // nothing left to reach on either channel
         assert_eq!(channels.publish(b"x".to_vec(), b"foo").unwrap(), 0);

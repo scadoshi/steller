@@ -15,3 +15,24 @@ path = "src/lib/lib.rs"
 anyhow = "1.0.102"
 thiserror = "2.0.18"
 wincode = { version = "0.5.3", features = ["derive"] }
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+# never ship
+todo = "deny"
+dbg_macro = "deny"
+unimplemented = "deny"
+# no panics in non-test code
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+exit = "deny"
+arithmetic_side_effects = "warn"
+as_conversions = "warn"

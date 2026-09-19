@@ -45,6 +45,7 @@ impl Server {
     ///
     /// `Err` only on fatal setup: a failed bind or a snapshot that won't load.
     /// Per-connection errors are logged and stay put.
+    #[expect(clippy::too_many_lines)]
     pub fn run() -> anyhow::Result<()> {
         let persister = Persister::initialize()?;
         let cache = Cache::new(persister.snapshot.load()?);
@@ -55,7 +56,7 @@ impl Server {
         let channels = Channels::new();
 
         let shutdown = Arc::new(AtomicBool::new(false));
-        let mut id = 0;
+        let mut id = 0u32;
 
         let mut handles = Vec::<JoinHandle<()>>::new();
 
@@ -82,8 +83,8 @@ impl Server {
         // persistence
         let persistence_cache = cache.clone();
         let persist = move || match persister.snapshot(&persistence_cache) {
-            Ok(_) => println!("cache persisted"),
-            Err(e) => eprintln!("failed to persist cache: {}", e),
+            Ok(()) => println!("cache persisted"),
+            Err(e) => eprintln!("failed to persist cache: {e}"),
         };
 
         let persistence_shutdown = shutdown.clone();
@@ -103,8 +104,8 @@ impl Server {
         // ttl
         let sweeper_cache = cache.clone();
         let remove_expired = move || match sweeper_cache.remove_expired() {
-            Ok(expired) => println!("{} expired keys removed", expired),
-            Err(e) => eprintln!("failed to remove expired keys: {}", e),
+            Ok(expired) => println!("{expired} expired keys removed"),
+            Err(e) => eprintln!("failed to remove expired keys: {e}"),
         };
         let sweeper_shutdown = shutdown.clone();
         handles.push(spawn(move || {
@@ -123,7 +124,7 @@ impl Server {
         // main
         let listener = TcpListener::bind(BIND_ADDRESS)?;
         listener.set_nonblocking(true)?;
-        println!("listening on {}", BIND_ADDRESS);
+        println!("listening on {BIND_ADDRESS}");
         loop {
             if shutdown.load(Ordering::Relaxed) {
                 break;
@@ -132,22 +133,22 @@ impl Server {
             match listener.accept() {
                 Ok((writer_stream, _)) => {
                     let shutdown_clone = shutdown.clone();
-                    id += 1;
-                    println!("client {} connected", id);
+                    id = id.wrapping_add(1);
+                    println!("client {id} connected");
                     let cache_service_clone = cache_service.clone();
                     let channels_clone = channels.clone();
                     handles.push(spawn(move || {
                         let reader_stream = match writer_stream.try_clone() {
                             Ok(stream) => stream,
                             Err(e) => {
-                                eprintln!("failed to clone stream: {}", e);
+                                eprintln!("failed to clone stream: {e}");
                                 return;
                             }
                         };
                         if let Err(e) =
                             reader_stream.set_read_timeout(Some(Duration::from_millis(500)))
                         {
-                            eprintln!("failed to set stream read timeout: {}", e);
+                            eprintln!("failed to set stream read timeout: {e}");
                         }
                         let session = Session::new(
                             id,
@@ -156,17 +157,16 @@ impl Server {
                             cache_service_clone,
                             channels_clone,
                         );
-                        match session.repl(shutdown_clone) {
-                            Ok(_) => (),
-                            Err(e) => eprintln!("failed to repl: {}", e),
+                        match session.repl(&shutdown_clone) {
+                            Ok(()) => (),
+                            Err(e) => eprintln!("failed to repl: {e}"),
                         }
                     }));
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(50));
-                    continue;
                 }
-                Err(e) => eprintln!("failed to accept connection: {}", e),
+                Err(e) => eprintln!("failed to accept connection: {e}"),
             }
         }
         for h in handles {

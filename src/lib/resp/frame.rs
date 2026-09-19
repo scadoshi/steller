@@ -68,19 +68,20 @@ impl Frame {
         let Some((header, bytes)) = bytes.split_crlf() else {
             return Err(FrameError::Incomplete);
         };
-        if header.len() < 2 {
+        let Some((sigil, len_bytes)) = header.split_first() else {
+            return Err(FrameError::Malformed);
+        };
+        if len_bytes.is_empty() {
             return Err(FrameError::Malformed);
         }
-        let len = std::str::from_utf8(&header[1..])
+        let len = std::str::from_utf8(len_bytes)
             .map_err(ParseLengthError::from)?
             .parse::<usize>()
             .map_err(ParseLengthError::from)?;
-        if header[0] == b'*' {
-            Frame::parse_array(bytes, len)
-        } else if header[0] == b'$' {
-            Frame::parse_bulk_string(bytes, len)
-        } else {
-            Err(FrameError::UnknownSigil)
+        match sigil {
+            b'*' => Frame::parse_array(bytes, len),
+            b'$' => Frame::parse_bulk_string(bytes, len),
+            _ => Err(FrameError::UnknownSigil),
         }
     }
 
@@ -102,10 +103,13 @@ impl Frame {
     /// [`FrameError::MissingTerminator`] if the buffer is too short or the trailing
     /// `\r\n` is missing.
     pub fn parse_bulk_string(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
-        if bytes.len() < len + 2 || &bytes[len..len + 2] != b"\r\n" {
+        let Some((payload, rest)) = bytes.split_at_checked(len) else {
             return Err(FrameError::MissingTerminator);
-        }
-        Ok((Frame::BulkString(bytes[0..len].to_vec()), &bytes[len + 2..]))
+        };
+        let Some(remaining) = rest.strip_prefix(b"\r\n") else {
+            return Err(FrameError::MissingTerminator);
+        };
+        Ok((Frame::BulkString(payload.to_vec()), remaining))
     }
 
     pub fn write_to(&self, w: &mut impl Write) -> Result<(), IoError> {
@@ -215,7 +219,7 @@ mod tests {
         assert_eq!(
             Frame::parse_array(b"", 0).unwrap(),
             (Frame::Array(vec![]), "".as_bytes())
-        )
+        );
     }
     #[test]
     fn parse_one_ok_basic_bulk_string() {
@@ -242,7 +246,7 @@ mod tests {
         assert_eq!(
             Frame::parse_one(b"*0\r\n").unwrap(),
             (Frame::Array(vec![]), "".as_bytes())
-        )
+        );
     }
     #[test]
     fn parse_one_ok_nested_array() {
@@ -255,7 +259,7 @@ mod tests {
                 ])]),
                 "baz".as_bytes()
             )
-        )
+        );
     }
     #[test]
     fn parse_one_err_incomplete() {

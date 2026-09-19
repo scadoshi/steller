@@ -66,12 +66,8 @@ impl TempPath {
     /// caller decides whether to open it via [`PersisterInner`] or directly.
     pub fn new(prefix: &str) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "steller_{}_{}_{}",
-            prefix,
-            std::process::id(),
-            id
-        ));
+        let path =
+            std::env::temp_dir().join(format!("steller_{}_{}_{}", prefix, std::process::id(), id));
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("tmp"));
         Self { path }

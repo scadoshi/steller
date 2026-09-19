@@ -107,8 +107,7 @@ impl Aof {
                         Ok(Command::Cache(cc)) => {
                             cache.execute(&cc)?;
                         }
-                        Ok(Command::Channel(_)) => {}
-                        Ok(Command::Ping { .. }) => {}
+                        Ok(Command::Channel(_) | Command::Ping { .. }) => {}
                         Err(e) => return Err(e.into()),
                     }
                 }
@@ -143,7 +142,7 @@ mod tests {
         (Aof::from(inner), temp)
     }
 
-    /// Flush the BufWriter so bytes actually land on disk for the next read.
+    /// Flush the `BufWriter` so bytes actually land on disk for the next read.
     fn flush(aof: &Aof) {
         aof.writer.lock().unwrap().flush().unwrap();
     }

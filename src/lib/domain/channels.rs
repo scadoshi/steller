@@ -96,7 +96,7 @@ impl Channels {
         guard
             .entry(channel_id.into())
             .or_default()
-            .insert(subscriber.id, subscriber.sender.clone());
+            .insert(subscriber.id, subscriber.sender);
         Ok(())
     }
 
@@ -129,7 +129,7 @@ impl Channels {
         message: impl AsRef<Vec<u8>>,
         channel_id: &[u8],
     ) -> Result<u32, ChannelsError> {
-        let mut sent_count = 0;
+        let mut sent_count = 0u32;
         let mut guard = self
             .channels
             .lock()
@@ -138,7 +138,7 @@ impl Channels {
             subs.retain(
                 |_id, sender| match sender.send(message.as_ref().to_owned()) {
                     Ok(()) => {
-                        sent_count += 1;
+                        sent_count = sent_count.saturating_add(1);
                         true
                     }
                     Err(_) => false,

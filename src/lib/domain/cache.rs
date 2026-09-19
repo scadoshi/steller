@@ -248,7 +248,7 @@ impl Cache {
             .filter(|(_, Entry { expires_at, .. })| expires_at.is_some_and(|t| now >= t))
             .map(|(key, _)| key.to_owned())
             .collect();
-        for key in expired.iter() {
+        for key in &expired {
             guard.remove(key);
         }
         Ok(expired.len())
@@ -261,7 +261,7 @@ impl Cache {
                 None => CommandOutcome::Value(None),
             },
             CacheCommand::Read(ReadCommand::Exists { key }) => {
-                CommandOutcome::Integer(self.contains(key)? as i64)
+                CommandOutcome::Integer(i64::from(self.contains(key)?))
             }
             // TTL reports whole seconds, rounded up so a just-set 60s TTL reads back as
             // 60 rather than 59. A PTTL arm would hand back the Milliseconds untouched.
@@ -578,7 +578,7 @@ mod tests {
             .unwrap();
         let remaining = match cache.time_to_live("foo").unwrap() {
             Some(Some(t)) => t,
-            other => panic!("expected Some(Some(_)), got {:?}", other),
+            other => panic!("expected Some(Some(_)), got {other:?}"),
         };
         // ~3600s of millis, with slack for the clock ticking during the call.
         assert!((3_590_000..=3_600_000).contains(&remaining.get()));
@@ -707,7 +707,7 @@ mod tests {
         cache.insert("foo", Entry::new("bar", None)).unwrap();
         match cache.execute(&get("foo")).unwrap() {
             CommandOutcome::Value(Some(v)) => assert_eq!(v, b"bar".to_vec()),
-            other => panic!("expected Value(Some), got {:?}", other),
+            other => panic!("expected Value(Some), got {other:?}"),
         }
     }
 
@@ -828,7 +828,7 @@ mod tests {
             CommandOutcome::Ttl(TtlOutcome::Some(t)) => {
                 assert!((3590..=3600).contains(&t.get()));
             }
-            other => panic!("expected Ttl(Some), got {:?}", other),
+            other => panic!("expected Ttl(Some), got {other:?}"),
         }
     }
 

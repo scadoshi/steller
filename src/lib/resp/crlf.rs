@@ -28,10 +28,10 @@ impl Crlf for [u8] {
     }
 
     fn split_crlf(&self) -> Option<(&[u8], &[u8])> {
-        let p = self
-            .windows(2)
-            .position(|w| w[0] == b'\r' && w[1] == b'\n')?;
-        Some((&self[..p], &self[p + 2..]))
+        let p = self.windows(2).position(|w| w == b"\r\n")?;
+        let (before, rest) = self.split_at_checked(p)?;
+        let after = rest.get(2..)?;
+        Some((before, after))
     }
 }
 

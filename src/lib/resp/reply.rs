@@ -168,7 +168,7 @@ impl Replies {
 
     /// Serialize every frame into one flat buffer, concatenated with no wrapping header.
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.inner.iter().flat_map(|r| r.to_bytes()).collect()
+        self.inner.iter().flat_map(Reply::to_bytes).collect()
     }
 }
 
