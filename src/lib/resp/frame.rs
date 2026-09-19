@@ -11,12 +11,16 @@ use thiserror::Error;
 
 type IoError = std::io::Error;
 
+/// Failure parsing a frame.
 #[derive(Debug, Error)]
 pub enum FrameError {
+    /// A bulk-string payload wasn't followed by `\r\n`.
     #[error("missing crlf terminator")]
     MissingTerminator,
+    /// The header byte wasn't `*` or `$`.
     #[error("unknown sigil")]
     UnknownSigil,
+    /// The header's length bytes didn't form a `usize`.
     #[error("failed to parse length: {0}")]
     InvalidLength(#[from] ParseLengthError),
     /// Not enough bytes yet. The caller reads more from the socket and retries.
@@ -27,10 +31,13 @@ pub enum FrameError {
     Malformed,
 }
 
+/// Why the length in a RESP header didn't parse.
 #[derive(Debug, Error)]
 pub enum ParseLengthError {
+    /// The bytes weren't UTF-8.
     #[error(transparent)]
     Utf8(#[from] Utf8Error),
+    /// The bytes were UTF-8 but not a `usize`.
     #[error(transparent)]
     ParseInt(#[from] ParseIntError),
 }
@@ -87,6 +94,7 @@ impl Frame {
         Ok((Frame::Array(vec), buf))
     }
 
+    /// Parse exactly `len` payload bytes followed by `\r\n`.
     pub fn parse_bulk_string(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
         let Some((payload, rest)) = bytes.split_at_checked(len) else {
             return Err(FrameError::MissingTerminator);

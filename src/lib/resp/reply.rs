@@ -38,14 +38,17 @@ impl TryFrom<&[u8]> for SimpleInner {
 }
 
 impl SimpleInner {
+    /// The validated payload bytes.
     fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 
+    /// The `+OK` payload.
     pub fn ok() -> Self {
         Self(b"OK".to_vec())
     }
 
+    /// The `+PONG` payload.
     pub fn pong() -> Self {
         Self(b"PONG".to_vec())
     }
@@ -84,10 +87,12 @@ pub enum Reply {
 }
 
 impl Reply {
+    /// Write the whole frame to `w`. The caller flushes.
     pub fn write_to(&self, w: &mut impl Write) -> std::io::Result<()> {
         w.write_all(self.to_bytes().as_slice())
     }
 
+    /// The frame as RESP bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut b = Vec::new();
         match self {
@@ -138,6 +143,7 @@ pub struct Replies {
 }
 
 impl Replies {
+    /// Write every frame to `buf`, in order.
     pub fn write_to(&self, buf: &mut impl Write) -> std::io::Result<()> {
         for reply in &self.inner {
             reply.write_to(buf)?;
@@ -145,6 +151,7 @@ impl Replies {
         Ok(())
     }
 
+    /// Every frame's bytes, concatenated.
     pub fn to_bytes(&self) -> Vec<u8> {
         self.inner.iter().flat_map(Reply::to_bytes).collect()
     }

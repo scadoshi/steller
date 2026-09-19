@@ -31,10 +31,13 @@ type IoError = std::io::Error;
 /// Failure on the AOF write or replay path. Boxed into [`RepositoryError`] at the boundary.
 #[derive(Debug, Error)]
 pub enum AofError {
+    /// File I/O failed.
     #[error(transparent)]
     Io(#[from] IoError),
+    /// A writer panicked while holding the log mutex.
     #[error("mutex poisoned")]
     MutexPoisoned,
+    /// A replayed command failed to apply to the cache.
     #[error(transparent)]
     Cache(#[from] CacheError),
     /// A replayed frame parsed but didn't lift into a known command, meaning corruption or
@@ -53,6 +56,7 @@ impl From<AofError> for RepositoryError {
     }
 }
 
+/// The append-only log, over the persister's shared writer and path.
 #[derive(Debug, Clone)]
 pub struct Aof(PersisterInner);
 

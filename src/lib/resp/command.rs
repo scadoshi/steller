@@ -16,6 +16,7 @@ use crate::{
 use std::time::SystemTimeError;
 use thiserror::Error;
 
+/// Next frame from the iterator, which must be a bulk string.
 macro_rules! next_bulk {
     ($iter:expr) => {{
         let Some(frame) = $iter.next() else {
@@ -28,6 +29,7 @@ macro_rules! next_bulk {
     }};
 }
 
+/// A bulk string's bytes as a `u64`.
 fn parse_u64(bytes: &[u8]) -> Result<u64, CommandFromFrameError> {
     Ok(std::str::from_utf8(bytes)
         .map_err(CommandError::from)?
@@ -35,6 +37,7 @@ fn parse_u64(bytes: &[u8]) -> Result<u64, CommandFromFrameError> {
         .map_err(CommandError::from)?)
 }
 
+/// Failure turning a [`Frame`] into a [`Command`].
 #[derive(Debug, Error)]
 pub enum CommandFromFrameError {
     /// Verb-level: wrong arity, unknown verb, a numeric arg that didn't parse.

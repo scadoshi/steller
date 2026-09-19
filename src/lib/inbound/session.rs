@@ -262,6 +262,7 @@ impl<W: Write + Send + 'static> WriteHalf<W> {
 }
 
 impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
+    /// A session over a connected stream's two halves, with no subscriptions yet.
     pub fn new(
         id: u32,
         reader: R,
@@ -282,6 +283,8 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
         }
     }
 
+    /// Split into halves joined by a reply mpsc: the reader gets the sender, the writer
+    /// the receiver.
     pub fn split(self) -> (ReadHalf<R, CS>, WriteHalf<W>) {
         let Session {
             id,

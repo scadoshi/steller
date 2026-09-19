@@ -24,11 +24,13 @@ type IoError = std::io::Error;
 /// Failure loading or storing a snapshot. Boxed into [`RepositoryError`] at the boundary.
 #[derive(Debug, Error)]
 pub enum SnapshotError {
+    /// File I/O failed.
     #[error(transparent)]
     Io(#[from] IoError),
     /// `wincode` couldn't deserialize the file: corrupt, or an incompatible format.
     #[error(transparent)]
     Read(#[from] ReadError),
+    /// `wincode` couldn't serialize the map.
     #[error(transparent)]
     Write(#[from] WriteError),
 }

@@ -53,6 +53,7 @@ pub struct SubUnsubInnerEntry {
 }
 
 impl SubUnsubInnerEntry {
+    /// An entry naming a concrete channel.
     pub fn new(channel_id: impl Into<Vec<u8>>, subscription_count: usize) -> Self {
         Self {
             channel_id: Some(channel_id.into()),

@@ -21,6 +21,7 @@ pub struct Service<CR: CacheRepository> {
 }
 
 impl<CR: CacheRepository> Service<CR> {
+    /// A service over a shared cache and a repository.
     pub fn new(cache: Cache, cache_repo: CR) -> Self {
         Self { cache, cache_repo }
     }

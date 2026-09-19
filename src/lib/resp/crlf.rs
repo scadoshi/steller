@@ -2,7 +2,9 @@
 //! header and payload. Implemented for `[u8]` so callers can write `bytes.split_crlf()`
 //! on any slice without ceremony.
 
+/// Non-allocating inspection and splitting on the `\r\n` terminator.
 pub trait Crlf {
+    /// `true` if the slice starts with `\r\n`.
     fn is_crlf(&self) -> bool;
 
     /// Split on the first `\r\n`, dropping the terminator. `None` when there isn't one,

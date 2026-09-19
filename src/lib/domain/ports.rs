@@ -26,6 +26,7 @@ use thiserror::Error;
 /// `Corrupt` get carved out when the service needs to decide on one, not before.
 #[derive(Debug, Error)]
 pub enum RepositoryError {
+    /// Any adapter error, boxed. The domain treats it as "persistence failed".
     #[error(transparent)]
     Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -35,6 +36,7 @@ pub enum RepositoryError {
 /// The `Clone + Send + Sync + 'static` bounds let one repository handle be shared across
 /// every session thread and live for the whole process.
 pub trait CacheRepository: Clone + Send + Sync + 'static {
+    /// Durably log one state-mutating command.
     fn append(&self, command: WriteCommand) -> Result<(), RepositoryError>;
     /// Snapshot the cache and compact the log.
     fn snapshot(&self, cache: &Cache) -> Result<(), RepositoryError>;
@@ -47,12 +49,16 @@ pub trait CacheRepository: Clone + Send + Sync + 'static {
 /// [`Repository`](ServiceError::Repository).
 #[derive(Debug, Error)]
 pub enum ServiceError {
+    /// The cache operation failed.
     #[error(transparent)]
     Cache(#[from] CacheError),
+    /// Logging the mutation failed.
     #[error(transparent)]
     Repository(#[from] RepositoryError),
+    /// The subscription registry failed.
     #[error(transparent)]
     Channels(#[from] ChannelsError),
+    /// Anything without a more specific service meaning.
     #[error(transparent)]
     Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
 }

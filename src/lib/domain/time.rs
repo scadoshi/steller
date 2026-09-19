@@ -58,11 +58,13 @@ impl Milliseconds {
         Ok(Self(u64::try_from(millis).unwrap_or(u64::MAX)))
     }
 
+    /// Difference floored at zero, so a passed deadline reads as no time left.
     #[must_use]
     pub fn saturating_sub(self, other: Self) -> Self {
         Self(self.0.saturating_sub(other.0))
     }
 
+    /// Sum clamped at `u64::MAX`. Turns a relative TTL into an absolute deadline.
     #[must_use]
     pub fn saturating_add(self, other: Self) -> Self {
         Self(self.0.saturating_add(other.0))

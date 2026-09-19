@@ -32,6 +32,7 @@ use std::{
 use thiserror::Error;
 use wincode::{SchemaRead, SchemaWrite};
 
+/// Failure inside a [`Cache`] operation.
 #[derive(Debug, Error)]
 pub enum CacheError {
     /// A thread panicked while holding the shared mutex. The in-memory state may be
@@ -58,6 +59,7 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// Value bytes plus an optional deadline.
     pub fn new(value: impl Into<Vec<u8>>, expires_at: Option<Milliseconds>) -> Self {
         Self {
             value: value.into(),
