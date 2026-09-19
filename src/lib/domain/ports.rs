@@ -21,12 +21,16 @@ use crate::domain::{
 };
 use thiserror::Error;
 
-/// Failure crossing the persistence boundary. One opaque catch-all for now, since the
-/// domain doesn't branch on persistence failure modes yet. Variants like `Unavailable` or
-/// `Corrupt` get carved out when the service needs to decide on one, not before.
+/// Failure crossing the persistence boundary, in terms the domain can react to rather
+/// than the adapter's own taxonomy.
+///
+/// One opaque catch-all for now. The domain doesn't branch on persistence failure modes
+/// yet, so every adapter error boxes into it. Variants like `Unavailable` or `Corrupt`
+/// get carved out when the service needs to decide on one, not before.
 #[derive(Debug, Error)]
 pub enum RepositoryError {
-    /// Any adapter error, boxed. The domain treats it as "persistence failed".
+    /// Opaque catch-all. The adapter boxes any error it has no domain meaning for into
+    /// here; the domain treats it as "persistence failed" without inspecting the cause.
     #[error(transparent)]
     Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
@@ -46,7 +50,8 @@ pub trait CacheRepository: Clone + Send + Sync + 'static {
 ///
 /// `execute` only hits the cache, so it can only fail with [`Cache`](ServiceError::Cache).
 /// `execute_logged` also appends, so it can additionally fail with
-/// [`Repository`](ServiceError::Repository).
+/// [`Repository`](ServiceError::Repository). The `#[from]` conversions let `?` lift either
+/// at the call site.
 #[derive(Debug, Error)]
 pub enum ServiceError {
     /// The cache operation failed.

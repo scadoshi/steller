@@ -82,13 +82,15 @@ impl Aof {
         Ok(())
     }
 
-    /// Replay the log into `cache`, in memory only, with no re-logging.
+    /// Rebuild cache state by replaying the log: parse each frame, lift it to a command,
+    /// apply it *in-memory only* (no re-logging).
     ///
-    /// A trailing [`Incomplete`](FrameError::Incomplete) frame is the torn tail a crash
-    /// mid-append leaves behind, so replay stops there and keeps everything before it. Any
-    /// other parse failure or an unknown command is fatal: in our own log those mean real
-    /// corruption. Runs at startup before clients connect, so there is no concurrency to
-    /// coordinate.
+    /// Reads the whole file, then walks it frame-by-frame. Stops on a trailing
+    /// [`Incomplete`](FrameError::Incomplete) frame, which is the expected torn tail from a
+    /// crash mid-append, and keeps everything parsed so far. Any *other* parse failure or an
+    /// unknown command is fatal, because in our own log those mean real corruption rather
+    /// than a normal partial write. Runs at startup before clients connect, so
+    /// per-command locking inside `execute` is fine. There is no concurrency to coordinate.
     pub fn replay(&self, cache: &Cache) -> Result<(), AofError> {
         let aof = {
             let mut aof = Vec::<u8>::new();

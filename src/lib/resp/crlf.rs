@@ -2,13 +2,19 @@
 //! header and payload. Implemented for `[u8]` so callers can write `bytes.split_crlf()`
 //! on any slice without ceremony.
 
-/// Non-allocating inspection and splitting on the `\r\n` terminator.
+/// Operations for inspecting and splitting on the RESP `\r\n` terminator.
+///
+/// Both methods are non-allocating and return slices that borrow from the receiver.
 pub trait Crlf {
-    /// `true` if the slice starts with `\r\n`.
+    /// `true` if the slice starts with exactly the two bytes `\r\n`.
+    /// Returns `false` for shorter inputs or any other prefix.
     fn is_crlf(&self) -> bool;
 
-    /// Split on the first `\r\n`, dropping the terminator. `None` when there isn't one,
-    /// which one layer up is the parser's "incomplete frame, read more" signal.
+    /// Split on the *first* `\r\n` in the slice. Returns `(before, after)` excluding
+    /// the terminator itself.
+    ///
+    /// Returns `None` when no `\r\n` is found. That `None` is load-bearing one layer up:
+    /// it is the parser's "incomplete frame, read more" signal.
     fn split_crlf(&self) -> Option<(&[u8], &[u8])>;
 }
 

@@ -56,9 +56,12 @@ pub enum Frame {
 }
 
 impl Frame {
-    /// Parse one frame from the front of `bytes`, returning it and the leftover slice.
-    /// [`FrameError::Incomplete`] is the signal the session uses to read more from the
-    /// socket before retrying.
+    /// Parse one frame from the front of `bytes`. Returns the parsed frame and the
+    /// leftover slice, which borrows from the input rather than allocating.
+    ///
+    /// Returns [`FrameError::Incomplete`] when there aren't enough bytes yet. That's
+    /// the load-bearing signal the session layer uses to keep reading from the socket
+    /// before retrying.
     pub fn parse_one(bytes: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         let Some((header, bytes)) = bytes.split_crlf() else {
             return Err(FrameError::Incomplete);
@@ -94,7 +97,9 @@ impl Frame {
         Ok((Frame::Array(vec), buf))
     }
 
-    /// Parse exactly `len` payload bytes followed by `\r\n`.
+    /// Parse a bulk string of exactly `len` bytes followed by `\r\n`. Returns
+    /// [`FrameError::MissingTerminator`] if the buffer is too short or the trailing
+    /// `\r\n` is missing.
     pub fn parse_bulk_string(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
         let Some((payload, rest)) = bytes.split_at_checked(len) else {
             return Err(FrameError::MissingTerminator);

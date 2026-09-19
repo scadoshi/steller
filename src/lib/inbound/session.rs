@@ -108,8 +108,9 @@ pub struct Session<R: Read, W: Write, CS: CacheService> {
     global_channels: Channels,
 }
 
-/// The reading side of a split session. Replies are queued on the mpsc here, never
-/// written to the socket.
+/// The reading side of a split session. Holds the parser, the cache service, this
+/// session's id and subscriptions, a handle to the shared [`Channels`] registry, and the
+/// sending end of the reply mpsc. Replies are queued here, never written to the socket.
 pub struct ReadHalf<R: Read, CS: CacheService> {
     id: u32,
     reader: SessionReader<R>,

@@ -8,11 +8,12 @@
 //! Ports and adapters. The dependency arrow points inward: adapters depend on the domain,
 //! never the reverse.
 //!
-//! [`domain`] holds the core: `Cache`, `Entry`, `Command`, the `Service` orchestrator, and
-//! the `ports` the adapters plug into. Nothing there knows about RESP, TCP, or files.
-//! [`inbound`] is the accept loop plus the per-connection session, and [`outbound`] is the
-//! persister behind the `CacheRepository` port. [`resp`] is the wire codec; both other
-//! layers use it, so it sits beside them rather than inside either.
+//! - [`domain`] holds the core: `Cache`, `Entry`, `Command`, the `Service` orchestrator,
+//!   and the `ports` the adapters plug into. Nothing here knows about RESP, TCP, or files.
+//! - [`inbound`] is the driving adapter: accept loop plus per-connection session.
+//! - [`outbound`] is the driven adapter: the persister behind the `CacheRepository` port.
+//! - [`resp`] is the wire codec. Both other layers use it, so it sits beside them rather
+//!   than inside either.
 //!
 //! `src/main.rs` just calls [`inbound::server::Server::run`].
 
