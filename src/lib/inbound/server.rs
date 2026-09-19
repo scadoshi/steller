@@ -12,9 +12,12 @@
 //! which bounds how long shutdown takes. `JoinHandle`s are pruned with `is_finished()`
 //! while the server runs and joined on exit, so nothing gets dropped silently.
 //!
-//! The listener is non-blocking so the accept loop can poll the flag instead of parking
-//! inside `accept()`. The 50ms sleep on `WouldBlock` is what keeps that from spinning a
-//! core when nobody is connecting.
+//! The listener blocks in `accept()`, so an idle server costs nothing and a new connection
+//! is picked up the instant it arrives. To get the accept loop out of that block on
+//! shutdown, the stdin thread flips the flag and then opens one throwaway connection to
+//! the listener's own address: `accept()` returns it, the loop sees the flag, drops the
+//! stream, and stops. (The listener used to be non-blocking with a 50ms sleep between
+//! polls, which put up to 50ms on every new connection's first request.)
 
 use crate::{
     domain::{
@@ -24,7 +27,7 @@ use crate::{
     outbound::persister::Persister,
 };
 use std::{
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -59,19 +62,35 @@ impl Server {
 
         let mut handles = Vec::<JoinHandle<()>>::new();
 
+        // Bind before spawning anything: a failed bind is then a clean error with no
+        // threads to unwind, and the shutdown thread knows where to knock.
+        let listener = TcpListener::bind(BIND_ADDRESS)?;
+        let wake_address = listener.local_addr()?;
+
         // shutdown
         let shutdown_trigger = shutdown.clone();
         handles.push(spawn(move || {
+            // Flip the flag, then knock on the listener so `accept()` returns and the loop
+            // can see it. `Release` pairs with the `Acquire` load in the accept loop: it
+            // must never mistake the knock for a client, because spawning a session for it
+            // and blocking in `accept()` again would hang shutdown with nobody left to
+            // connect.
+            let trigger = || {
+                shutdown_trigger.store(true, Ordering::Release);
+                if let Err(e) = TcpStream::connect(wake_address) {
+                    eprintln!("failed to wake the accept loop: {e}");
+                }
+            };
             let mut s = String::new();
             loop {
                 s.clear();
                 match std::io::stdin().read_line(&mut s) {
                     Ok(0) => {
-                        shutdown_trigger.store(true, Ordering::Relaxed);
+                        trigger();
                         break;
                     }
                     Ok(_) if matches!(s.trim().to_lowercase().as_str(), "quit" | "exit") => {
-                        shutdown_trigger.store(true, Ordering::Relaxed);
+                        trigger();
                         break;
                     }
                     _ => (),
@@ -121,16 +140,20 @@ impl Server {
         }));
 
         // main
-        let listener = TcpListener::bind(BIND_ADDRESS)?;
-        listener.set_nonblocking(true)?;
         println!("listening on {BIND_ADDRESS}");
         loop {
-            if shutdown.load(Ordering::Relaxed) {
+            if shutdown.load(Ordering::Acquire) {
                 break;
             }
             handles.retain(|t| !t.is_finished());
             match listener.accept() {
                 Ok((writer_stream, _)) => {
+                    if shutdown.load(Ordering::Acquire) {
+                        // The shutdown thread's knock, or a client that raced it. Either
+                        // way it gets no session.
+                        drop(writer_stream);
+                        break;
+                    }
                     let shutdown_clone = shutdown.clone();
                     id = id.wrapping_add(1);
                     println!("client {id} connected");
@@ -161,9 +184,6 @@ impl Server {
                             Err(e) => eprintln!("failed to repl: {e}"),
                         }
                     }));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
                 }
                 Err(e) => eprintln!("failed to accept connection: {e}"),
             }
