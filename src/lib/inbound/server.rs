@@ -5,8 +5,9 @@
 //!
 //! The main thread runs the accept loop and spawns one [`Session`] thread per connection.
 //! A persistence thread snapshots every 10s and once more on the way out. A sweeper
-//! thread calls `remove_expired` on the same tick. A shutdown thread blocks on stdin and
-//! flips the shared flag on EOF, `quit`, or `exit`.
+//! thread calls `remove_expired` on the same tick. A signal thread flips the shared flag
+//! on SIGTERM or SIGINT, and with a terminal attached a stdin thread flips it on EOF,
+//! `quit`, or `exit`.
 //!
 //! Every long-running thread holds the same `Arc<AtomicBool>` and checks it every 100ms,
 //! which bounds how long shutdown takes. `JoinHandle`s are pruned with `is_finished()`
@@ -14,8 +15,8 @@
 //!
 //! The listener blocks in `accept()`, so an idle server costs nothing and a new connection
 //! is picked up the instant it arrives. To get the accept loop out of that block on
-//! shutdown, the stdin thread flips the flag and then opens one throwaway connection to
-//! the listener's own address: `accept()` returns it, the loop sees the flag, drops the
+//! shutdown, whichever thread flips the flag then opens one throwaway connection to the
+//! listener's own address: `accept()` returns it, the loop sees the flag, drops the
 //! stream, and stops. (The listener used to be non-blocking with a 50ms sleep between
 //! polls, which put up to 50ms on every new connection's first request.)
 
@@ -26,8 +27,13 @@ use crate::{
     inbound::session::Session,
     outbound::persister::Persister,
 };
+use signal_hook::{
+    consts::{SIGINT, SIGTERM},
+    iterator::Signals,
+};
 use std::{
-    net::{TcpListener, TcpStream},
+    io::IsTerminal,
+    net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -38,6 +44,17 @@ use std::{
 
 /// Address the server listens on.
 const BIND_ADDRESS: &str = "127.0.0.1:3000";
+
+/// Flips the flag, then knocks on the listener so `accept()` returns and the loop can
+/// see it. `Release` pairs with the `Acquire` load in the accept loop, which must not
+/// mistake the knock for a client: spawning a session for it and blocking in `accept()`
+/// again hangs shutdown with nobody left to connect.
+fn trigger_shutdown(shutdown: &Arc<AtomicBool>, wake_address: SocketAddr) {
+    shutdown.store(true, Ordering::Release);
+    if let Err(e) = TcpStream::connect(wake_address) {
+        eprintln!("failed to wake the accept loop: {e}");
+    }
+}
 
 /// Zero-sized handle; the server is [`Server::run`].
 pub struct Server;
@@ -68,35 +85,43 @@ impl Server {
         let wake_address = listener.local_addr()?;
 
         // shutdown
-        let shutdown_trigger = shutdown.clone();
+        //
+        // Shuts down on SIGTERM (a service manager stopping us) and SIGINT (Ctrl-C),
+        // so both take the snapshot-and-join path instead of dying where they stand.
+        let signal_shutdown = shutdown.clone();
+        let mut signals = Signals::new([SIGTERM, SIGINT])?;
+        // Closing this ends `forever()`. A shutdown from anywhere else leaves the
+        // thread parked without it.
+        let signals_handle = signals.handle();
         handles.push(spawn(move || {
-            // Flip the flag, then knock on the listener so `accept()` returns and the loop
-            // can see it. `Release` pairs with the `Acquire` load in the accept loop: it
-            // must never mistake the knock for a client, because spawning a session for it
-            // and blocking in `accept()` again would hang shutdown with nobody left to
-            // connect.
-            let trigger = || {
-                shutdown_trigger.store(true, Ordering::Release);
-                if let Err(e) = TcpStream::connect(wake_address) {
-                    eprintln!("failed to wake the accept loop: {e}");
-                }
-            };
-            let mut s = String::new();
-            loop {
-                s.clear();
-                match std::io::stdin().read_line(&mut s) {
-                    Ok(0) => {
-                        trigger();
-                        break;
-                    }
-                    Ok(_) if matches!(s.trim().to_lowercase().as_str(), "quit" | "exit") => {
-                        trigger();
-                        break;
-                    }
-                    _ => (),
-                }
+            if signals.forever().next().is_some() {
+                trigger_shutdown(&signal_shutdown, wake_address);
             }
         }));
+
+        // Reads stdin only when a terminal is attached. Pointed at /dev/null, as a
+        // service manager does, `read_line` returns `Ok(0)` at once and that reads as
+        // shutdown.
+        if std::io::stdin().is_terminal() {
+            let stdin_shutdown = shutdown.clone();
+            handles.push(spawn(move || {
+                let mut s = String::new();
+                loop {
+                    s.clear();
+                    match std::io::stdin().read_line(&mut s) {
+                        Ok(0) => {
+                            trigger_shutdown(&stdin_shutdown, wake_address);
+                            break;
+                        }
+                        Ok(_) if matches!(s.trim().to_lowercase().as_str(), "quit" | "exit") => {
+                            trigger_shutdown(&stdin_shutdown, wake_address);
+                            break;
+                        }
+                        _ => (),
+                    }
+                }
+            }));
+        }
 
         // persistence
         let persistence_cache = cache.clone();
@@ -188,9 +213,30 @@ impl Server {
                 Err(e) => eprintln!("failed to accept connection: {e}"),
             }
         }
+        // Ends the signal thread so the joins below return.
+        signals_handle.close();
         for h in handles {
             let _ = h.join();
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trigger_shutdown_sets_the_flag_and_wakes_the_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let wake_address = listener.local_addr().unwrap();
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        trigger_shutdown(&shutdown, wake_address);
+
+        assert!(shutdown.load(Ordering::Acquire));
+        // The knock is what gets the accept loop out of its block, so a connection
+        // must be waiting.
+        listener.accept().unwrap();
     }
 }

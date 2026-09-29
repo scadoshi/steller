@@ -15,6 +15,9 @@ path = "src/lib/lib.rs"
 anyhow = "1.0.102"
 thiserror = "2.0.18"
 wincode = { version = "0.5.3", features = ["derive"] }
+# SIGTERM/SIGINT handling so a service manager can stop the server cleanly.
+# std has no signal API; this is the smallest thing that does the job.
+signal-hook = "0.3"
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 must_use_candidate = "allow"
