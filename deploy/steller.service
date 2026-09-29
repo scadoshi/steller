@@ -1,0 +1,59 @@
+[Unit]
+Description=steller, a Redis-compatible key-value server
+Documentation=https://github.com/scadoshi/steller
+After=network.target
+
+[Service]
+Type=simple
+User=steller
+Group=steller
+
+# Persistence paths are relative ("cache/aof", "cache/snapshot") and resolve
+# against this.
+WorkingDirectory=/var/lib/steller
+ExecStart=/usr/local/bin/steller
+
+# steller has no maxmemory and no eviction, so it grows without a cap here. At
+# this limit the kernel takes steller alone and the cache refills on next miss.
+MemoryMax=256M
+MemoryHigh=192M
+
+# Two threads per connection.
+TasksMax=512
+
+# SIGTERM unwinds the accept loop, snapshots, and joins. This is the room it
+# gets before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+Restart=on-failure
+RestartSec=5
+
+# No terminal, so the server waits on a signal rather than reading stdin.
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+# steller needs one directory and one loopback port.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/steller
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+# Binds 127.0.0.1:3000 with no AUTH, no TLS, no ACL. Loopback only is the
+# security model, not a preference. Do not widen.
+RestrictAddressFamilies=AF_INET AF_UNIX
+IPAddressAllow=localhost
+IPAddressDeny=any
+
+[Install]
+WantedBy=multi-user.target
