@@ -97,13 +97,18 @@ impl Frame {
         Ok((Frame::Array(vec), buf))
     }
 
-    /// Parse a bulk string of exactly `len` bytes followed by `\r\n`. Returns
-    /// [`FrameError::MissingTerminator`] if the buffer is too short or the trailing
-    /// `\r\n` is missing.
+    /// Parse a bulk string of exactly `len` bytes followed by `\r\n`.
+    ///
+    /// Returns [`FrameError::Incomplete`] while the payload or its terminator has not
+    /// all arrived, and [`FrameError::MissingTerminator`] when the two bytes after
+    /// the payload are there and are not `\r\n`.
     pub fn parse_bulk_string(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
         let Some((payload, rest)) = bytes.split_at_checked(len) else {
-            return Err(FrameError::MissingTerminator);
+            return Err(FrameError::Incomplete);
         };
+        if rest.len() < 2 {
+            return Err(FrameError::Incomplete);
+        }
         let Some(remaining) = rest.strip_prefix(b"\r\n") else {
             return Err(FrameError::MissingTerminator);
         };
@@ -195,9 +200,21 @@ mod tests {
     #[test]
     fn parse_bulk_string_err_missing_terminator() {
         assert!(matches!(
-            Frame::parse_bulk_string(b"foo", 1),
+            Frame::parse_bulk_string(b"fooXX", 3),
             Err(FrameError::MissingTerminator)
         ));
+    }
+    #[test]
+    fn parse_bulk_string_incomplete_while_the_payload_arrives() {
+        for partial in [&b""[..], b"fo", b"foo", b"foo\r"] {
+            assert!(
+                matches!(
+                    Frame::parse_bulk_string(partial, 3),
+                    Err(FrameError::Incomplete)
+                ),
+                "{partial:?}"
+            );
+        }
     }
     #[test]
     fn parse_array_ok_basic() {
@@ -295,9 +312,24 @@ mod tests {
     #[test]
     fn parse_one_err_invalid_missing_terminator() {
         assert!(matches!(
-            Frame::parse_one(b"$3\r\nfoo"),
+            Frame::parse_one(b"$3\r\nfooXX"),
             Err(FrameError::MissingTerminator)
         ));
+    }
+    #[test]
+    fn parse_one_incomplete_while_a_bulk_string_arrives() {
+        for partial in [
+            &b"$4\r\n"[..],
+            b"$4\r\nPI",
+            b"$4\r\nPING",
+            b"$4\r\nPING\r",
+            b"*1\r\n$4\r\nPI",
+        ] {
+            assert!(
+                matches!(Frame::parse_one(partial), Err(FrameError::Incomplete)),
+                "{partial:?}"
+            );
+        }
     }
 
     #[test]
