@@ -41,6 +41,10 @@ Read it. Then read it again. Then try to fix it. Then ask AI. Compiler errors ar
 
 See [commit_guidelines.md](commit_guidelines.md).
 
+## Comments
+
+A comment says what the code does, in the present tense, and only when the code does not say it itself. No history, no "without this", no restating the name. See [comment_guidelines.md](comment_guidelines.md).
+
 ## Tests
 
 - Write the test for a feature *after* the feature works manually, by hand, no AI
