@@ -24,7 +24,6 @@ Phased milestones (full detail in `context/plan.md`):
 - **M5** ✅ Pub/Sub, sync fan-out through each session's writer thread
 - **M6** ✅ SET options (EX / PX / EXAT / PXAT) and the millisecond migration
 - **In production** since 2026-09-29 as the cache behind [heron](https://github.com/scadoshi/heron). Deployed from heron's Actions tab, which clones this repo's `main`, builds, installs, and restarts `steller.service`.
-- **Known bug**, found by heron on its first day: a command that reaches the server in more than one read is answered `ERR missing crlf terminator`. `Frame::parse_bulk_string` returns `MissingTerminator` for a payload that has not all arrived, where `Incomplete` would make the session read more. Write-up in heron's `context/architecture/decisions.md`.
 - **M7** MULTI / EXEC
 - **M8 (stretch)** RDB snapshots, Streams, RESP3
 
@@ -42,6 +41,6 @@ The short version:
 
 - **Write by hand:** RESP parser, command dispatch, core data structures, connection loop.
 - **AI lane:** boilerplate (Cargo.toml deps, test scaffolding), explanations, debugging help *after* you've read the compiler error yourself.
-- **AI mode:** guide educationally. No straight answers, no code in `.rs` files. Lead with questions. Affirm correctness when it's right rather than pushing toward churn.
+- **AI mode:** guide educationally. No straight answers, no code in `.rs` files unless the user explicitly asks. Lead with questions. Affirm correctness when it's right rather than pushing toward churn.
 - **Read compiler errors first.** Always.
 - **Commit small.** One feature, one commit.
