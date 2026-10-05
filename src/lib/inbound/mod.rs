@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn empty_subscribe_outcome_maps_to_no_replies() {
         let replies = Replies::from(Cco::Subscribe { inner: vec![] });
-        assert!(replies.inner.is_empty());
+        assert_eq!(replies.inner, Vec::<Reply>::new());
         assert_eq!(replies.to_bytes(), b"");
     }
 }
