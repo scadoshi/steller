@@ -28,7 +28,7 @@ Steller's jay is the loud blue corvid all over the Pacific Northwest. It is a go
 
 That is what this does. It speaks Redis's protocol convincingly enough that `redis-cli` never notices it is talking to 6,000 lines of my Rust instead.
 
-The sibling storage engine is `chickadee`, another bird from the same forest. Chickadees cache thousands of seeds and grow extra hippocampus every autumn to remember where they put them, which is roughly a storage engine's job description.
+The sibling key-value store is `chickadee`, another bird from the same forest. Chickadees cache thousands of seeds and grow extra hippocampus every autumn to remember where they put them, which is roughly a storage engine's job description.
 
 ## Status
 
@@ -124,7 +124,7 @@ src/
 
 ## Sibling
 
-`chickadee` is the other half: an LSM storage engine (WAL, memtable, SSTable, bloom filters, compaction). Between them they cover both sides of how a production KV system gets built. This one is in-memory first, where persistence buys durability. That one is on-disk first, where persistence is the whole point.
+`chickadee` is the other half: a learning LSM key-value store (WAL, memtable, SSTable, bloom filters, compaction), the on-disk counterpart to this in-memory one. This one is in-memory first, where persistence buys durability. That one is on-disk first, where persistence is the whole point.
 
 ## Development context
 
