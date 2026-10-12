@@ -4,3 +4,6 @@ cache/snapshot
 cache/aof
 cache/snapshot.tmp
 demo/out
+
+# Worktrees created by Claude Code sessions
+.claude/worktrees/
