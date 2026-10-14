@@ -232,7 +232,7 @@ How to read it honestly:
 **Next**
 - A/B the old vs new binary back to back before writing up the accept change's effect.
 - `--threads` run to find the real ceiling; then a README benchmark section under the gif.
-- `server.rs` has no test module. Shutdown and accept behaviour are smoke-tested only
+- `server.rs` has no test module. Shutdown and accept behavior are smoke-tested only
   (fresh-connection latency, EOF / quit / live-client shutdown). A unit test needs an
   ephemeral port and a driven stdin; small design job, deferred on purpose.
 
