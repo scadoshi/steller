@@ -20,7 +20,13 @@ Speaks RESP over TCP, so real `redis-cli` clients work: ping, get, set, delete, 
 | 64 | 140,449 | 146,628 |
 | 256 | 151,976 | 176,678 |
 
-Under about 32 clients a thread blocked in `read()` wakes faster than an event-loop iteration, so steller leads. Past that, a thread per connection around one mutex flattens while Redis keeps climbing, and near 3,000 clients the process hits macOS's thread cap and dies, two threads per client. Pipelined on one connection steller does ~510k/s to Redis's ~216k. Those are the design's tradeoffs, measured rather than asserted.
+Under about 32 clients a thread blocked in `read()` wakes faster than an event-loop iteration, so steller leads.
+
+- Past that, a thread per connection around one mutex flattens while Redis keeps climbing.
+- Near 3,000 clients the process hits macOS's thread cap and dies, two threads per client.
+- Pipelined on one connection, steller does ~510k/s to Redis's ~216k.
+
+Those are the design's tradeoffs, measured rather than asserted.
 
 ## Why "steller"
 
@@ -72,9 +78,16 @@ To shut down cleanly, send EOF (Ctrl-D) or type `quit` / `exit` on the server's 
 - Ports and adapters. The domain defines two trait ports: `CacheRepository`, implemented by the persister, and `CacheService`, implemented by the domain `Service` and called by the session. The dependency arrow points inward. Adapter errors map into a domain-owned `RepositoryError` at the boundary, so the domain never names an outbound type.
 - The AOF is the wire protocol. The log stores each mutation as the exact RESP bytes a client would have sent, using the same `From<WriteCommand> for Frame` and `Frame::write_to` as the network path. Replay therefore needs no decoder of its own; it reuses `Frame::parse_one` and `Command::try_from`, the inbound path.
 
-  Two rules keep replay honest. Relative TTLs are made absolute at parse time and have no representation in `WriteCommand`, so a relative deadline can never reach the log. And deadlines are logged in the millisecond verbs (`PXAT`, `PEXPIREAT`) rather than the second ones, because those are the forms the parser reads back without converting. Logging `EXPIREAT` would hand replay a millisecond value that the seconds arm multiplies a second time, pushing every deadline 1000x further out on each restart.
+  Two rules keep replay honest:
 
-  Recovery loads the snapshot, then replays the log on top. A trailing torn frame from a crash mid-append stops replay cleanly; mid-stream corruption or an unknown command is fatal, because in our own log those mean something is actually wrong. Snapshots are written atomically (temp file, then `rename`) and truncate the log, which is the whole compaction story. Compaction drains the buffered writer before it truncates, and truncates through the same append-mode handle; the first benchmark run showed what happens otherwise, a hole of NULs the size of the old log ([BENCHMARKS.md](BENCHMARKS.md)).
+  - Relative TTLs are made absolute at parse time and have no representation in `WriteCommand`, so a relative deadline can never reach the log.
+  - Deadlines are logged in the millisecond verbs (`PXAT`, `PEXPIREAT`) rather than the second ones, because those are the forms the parser reads back without converting. Logging `EXPIREAT` would hand replay a millisecond value that the seconds arm multiplies a second time, pushing every deadline 1000x further out on each restart.
+
+  Recovery loads the snapshot, then replays the log on top.
+
+  - A trailing torn frame from a crash mid-append stops replay cleanly. Mid-stream corruption or an unknown command is fatal, because in our own log those mean something is actually wrong.
+  - Snapshots are written atomically (temp file, then `rename`) and truncate the log, which is the whole compaction story.
+  - Compaction drains the buffered writer before it truncates, and truncates through the same append-mode handle. The first benchmark run showed what happens otherwise: a hole of NULs the size of the old log ([BENCHMARKS.md](BENCHMARKS.md)).
 - Split session, which is what makes pub/sub work. A session owns both socket halves and splits into a `ReadHalf` that queues reply bytes on an mpsc and a `WriteHalf` that solely owns the write end and drains that mpsc. A `PUBLISH` from any session drops bytes into a subscriber's queue, and that subscriber's writer delivers them while its reader is still blocked on its own client.
 
   It's also generic: `Session<R: Read, W: Write, CS: CacheService>` tests against a `Cursor<Vec<u8>>` and a fake service instead of a socket and a real cache.
@@ -84,7 +97,11 @@ To shut down cleanly, send EOF (Ctrl-D) or type `quit` / `exit` on the server's 
   Milliseconds rather than seconds so `PX` and `PXAT` mean something: anyone reaching for them wants sub-second precision, and rounding at the edge would throw away the only reason to use them. `EX`, `PX`, `EXAT`, `PXAT`, and `EXPIRE` all normalize onto that one deadline at parse time, so storage never learns which verb produced it. `TTL` divides back to seconds on the way out, rounding up so a freshly-set 60s TTL reads back as 60 rather than 59.
 
   A past timestamp deletes immediately and returns `1`, matching real Redis. Lazy expiry on every read path drops expired keys on access, and a sweeper thread evicts on a 10s tick.
-- Graceful shutdown. One `Arc<AtomicBool>` that every thread watches. The listener blocks in `accept()`, so an idle server costs nothing and a new connection is picked up immediately. To get out of that block, the stdin thread flips the flag (`Release`) and then opens one throwaway connection to the listener's own address; the accept loop sees the flag (`Acquire`) as that connection comes in, drops it, and exits. Stdin EOF, `quit`, or `exit` is the trigger, which avoids a `ctrlc` dependency. Every thread is collected as a `JoinHandle` and joined before `main` returns, and the background threads check the flag every 100ms so shutdown latency stays bounded.
+- Graceful shutdown. One `Arc<AtomicBool>` that every thread watches.
+  - The listener blocks in `accept()`, so an idle server costs nothing and a new connection is picked up immediately.
+  - To get out of that block, the stdin thread flips the flag (`Release`) and then opens one throwaway connection to the listener's own address. The accept loop sees the flag (`Acquire`) as that connection comes in, drops it, and exits.
+  - Stdin EOF, `quit`, or `exit` is the trigger, which avoids a `ctrlc` dependency.
+  - Every thread is collected as a `JoinHandle` and joined before `main` returns, and the background threads check the flag every 100ms, so shutdown latency stays bounded.
 - Error-path test coverage. Every parser arm has explicit coverage for `TooManyParts`, `NotEnoughParts`, `UnexpectedFrame`, and where applicable `Syntax`, `Utf8`, and `ParseInt` on numeric args. 238 tests at last count.
 
 ## Layout

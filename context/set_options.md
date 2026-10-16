@@ -24,7 +24,9 @@ The fix is symmetry: encode the verb whose parse arm needs no conversion. `PEXPI
 
 ## The invariant worth keeping
 
-The replay path has to be time-invariant. `Command::try_from` is shared by the live network path and by AOF replay, so a clock read inside the parser looks dangerous. It isn't, for a specific reason: `WriteCommand` has no relative variant. A relative TTL is unrepresentable as a command, so it can never be written to the log, so replay never reaches the arms that read the clock. Removing the relative variant is what makes clock-in-parser safe.
+The replay path has to be time-invariant. `Command::try_from` is shared by the live network path and by AOF replay, so a clock read inside the parser looks dangerous.
+
+It isn't, for a specific reason: `WriteCommand` has no relative variant. A relative TTL is unrepresentable as a command, so it can never be written to the log, so replay never reaches the arms that read the clock. Removing the relative variant is what makes clock-in-parser safe.
 
 If a future command ever adds a relative form to `WriteCommand`, that guarantee is gone.
 
