@@ -66,53 +66,29 @@ Coverage is comprehensive through M4. Outstanding tests are deferred to the feat
 - [x] **Compaction (snapshot-then-truncate).** Taking a snapshot truncates the AOF, so the log only ever holds mutations *since* the last snapshot. Held under the cache lock across both the snapshot write and the AOF clear, so no mutation can be wiped in between. Order is snapshot first for the durable baseline, then clear. A crash between the two only re-applies already-snapshotted commands, which is harmless. Persist task loops on a 10s interval in `server.rs`.
 - [x] Crash safety: atomic temp-and-rename on snapshot, torn-tail-tolerant replay on the AOF.
 - [ ] **Full AOF rewrite without blocking writers.** The current compaction holds the cache lock for the snapshot duration (clone-under-lock semantics). The interesting version, a consistent snapshot *without* stalling writers, is still future work. Options are fork-and-COW, copy-on-write structures, or a rewrite buffer for concurrent writes. Fine at current scale; revisit under load.
-- [ ] **fsync durability tier.** Appends buffer through `BufWriter` with no per-write
-  `fsync`, and nothing flushes them until the 10s snapshot tick or a clean shutdown. A
-  `SIGKILL` in between loses every write since the last tick; verified, not theoretical.
-  `drop` doesn't save you either, since a killed process never runs it. A configurable
-  `everysec`/`always` policy is the fix.
+- [ ] **fsync durability tier.** Appends buffer through `BufWriter` with no per-write `fsync`, and nothing flushes them until the 10s snapshot tick or a clean shutdown. A `SIGKILL` in between loses every write since the last tick; verified, not theoretical. `drop` doesn't save you either, since a killed process never runs it. A configurable `everysec`/`always` policy is the fix.
 
 ### M5 Pub/Sub ✅ (merged, PR #1)
 
-Shipped: `SUBSCRIBE` / `UNSUBSCRIBE` / `PUBLISH`, a shared `Channels` registry keyed by
-session id, and fan-out through each session's existing writer thread.
+Shipped: `SUBSCRIBE` / `UNSUBSCRIBE` / `PUBLISH`, a shared `Channels` registry keyed by session id, and fan-out through each session's existing writer thread.
 
-The session split is what made it work. `ReadHalf` queues reply bytes on an mpsc;
-`WriteHalf` solely owns the socket's write end and drains that queue. A `PUBLISH` from any
-session drops bytes into a subscriber's queue and that subscriber's writer delivers them
-while its reader is still blocked on its own client. No per-subscriber thread needed.
+The session split is what made it work. `ReadHalf` queues reply bytes on an mpsc; `WriteHalf` solely owns the socket's write end and drains that queue. A `PUBLISH` from any session drops bytes into a subscriber's queue and that subscriber's writer delivers them while its reader is still blocked on its own client. No per-subscriber thread needed.
 
-Registry details that mattered: the inner collection is keyed by session id, so unsubscribe
-and disconnect cleanup are O(1) and a session can't double-register. A channel is dropped
-once its last subscriber leaves. `publish` prunes dead senders as it fans out, and every
-exit from the repl loop runs `unsubscribe_from_all`.
+Registry details that mattered: the inner collection is keyed by session id, so unsubscribe and disconnect cleanup are O(1) and a session can't double-register. A channel is dropped once its last subscriber leaves. `publish` prunes dead senders as it fans out, and every exit from the repl loop runs `unsubscribe_from_all`.
 
-Still deferred, deliberately: pattern subscriptions (`PSUBSCRIBE`), subscribed-mode command
-restriction, and any slow-subscriber policy beyond an unbounded queue.
+Still deferred, deliberately: pattern subscriptions (`PSUBSCRIBE`), subscribed-mode command restriction, and any slow-subscriber policy beyond an unbounded queue.
 
 ### M6 SET options ✅
 
-`SET key value [EX | PX | EXAT | PXAT]`, plus a storage migration from second-granular
-deadlines to milliseconds and `Seconds` / `Milliseconds` newtypes. Full write-up in
-`context/set_options.md`. The load-bearing detail: the AOF logs `PXAT` and `PEXPIREAT`
-rather than the second-granular verbs, because those are the forms the parser reads back
-without converting.
+`SET key value [EX | PX | EXAT | PXAT]`, plus a storage migration from second-granular deadlines to milliseconds and `Seconds` / `Milliseconds` newtypes. Full write-up in `context/set_options.md`. The load-bearing detail: the AOF logs `PXAT` and `PEXPIREAT` rather than the second-granular verbs, because those are the forms the parser reads back without converting.
 
 **Still open from the original M5 plan:**
 
-- [ ] **Pattern subscriptions** (`PSUBSCRIBE` / `PUNSUBSCRIBE`). Needs a parallel pattern
-  registry and the `["pmessage", pattern, channel, payload]` push shape.
-- [ ] **Subscribed-mode command restriction.** Once a session subscribes, real Redis only
-  accepts `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PING`, and `QUIT`.
-  Deferred on purpose: a per-session flag is easy, but nothing depends on it yet.
-- [ ] **Slow-subscriber policy.** The queue is unbounded today, so a subscriber that never
-  drains grows memory without limit. Real Redis disconnects past a buffer limit. Worth
-  picking a policy and writing down why before any load story.
-- [ ] **Session tests.** Still commented out from the split; the old inline `tests` mod
-  assumed the single-threaded `execute`/`writer` shape. Re-home them against `ReadHalf`
-  and `WriteHalf`.
-- [ ] **`to_bytes` / `write_to` duplication.** `Reply::to_bytes` repeats `write_to`'s
-  per-variant logic. Route one through the other.
+- [ ] **Pattern subscriptions** (`PSUBSCRIBE` / `PUNSUBSCRIBE`). Needs a parallel pattern registry and the `["pmessage", pattern, channel, payload]` push shape.
+- [ ] **Subscribed-mode command restriction.** Once a session subscribes, real Redis only accepts `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PING`, and `QUIT`. Deferred on purpose: a per-session flag is easy, but nothing depends on it yet.
+- [ ] **Slow-subscriber policy.** The queue is unbounded today, so a subscriber that never drains grows memory without limit. Real Redis disconnects past a buffer limit. Worth picking a policy and writing down why before any load story.
+- [ ] **Session tests.** Still commented out from the split; the old inline `tests` mod assumed the single-threaded `execute`/`writer` shape. Re-home them against `ReadHalf` and `WriteHalf`.
+- [ ] **`to_bytes` / `write_to` duplication.** `Reply::to_bytes` repeats `write_to`'s per-variant logic. Route one through the other.
 
 ### M7 MULTI / EXEC ⬜ (next)
 - [ ] **Session state machine.** Sessions get a `Mode { Normal, Queueing }` toggle. `MULTI` flips to `Queueing`; subsequent commands return `+QUEUED\r\n` instead of executing; `EXEC` flushes; `DISCARD` aborts.
@@ -173,38 +149,15 @@ Each milestone gets its own commit (or small series). Don't merge milestones. Ea
 
 ## 2026-09-19: first benchmark, the AOF hole, blocking accept
 
-Ran `redis-benchmark` against steller for the first time, with a real Redis on the next port
-for a baseline. Two bugs and one real number came out of it.
+Ran `redis-benchmark` against steller for the first time, with a real Redis on the next port for a baseline. Two bugs and one real number came out of it.
 
-**The AOF hole (durability bug, fixed).** After any run past 8 KiB of writes, the server
-could not restart: `failed to parse length: invalid digit found in string`. Cause was in
-`Aof::clear()`. It opened a second handle with `write + truncate` and swapped it in as the
-`BufWriter`, which did two wrong things at once: the replacement was not append-mode, so it
-carried a real cursor, and the old `BufWriter` was dropped *after* the truncate, so its
-pending bytes (up to 8 KiB) were flushed at the stale cursor into an empty file. The OS
-fills the gap with zeros. Result on disk after a graceful shutdown: 8,992,628 NULs then
-7,372 bytes of real frames (those two sum to exactly 200k SETs x 45 bytes). Replay reads
-byte 0, sees `\0` where `*` belongs, and refuses, which is the right call for mid-file
-garbage. It only ever fires past 8 KiB between snapshots, because below that the
-`BufWriter` never flushed and the cursor never left zero. No manual session could hit it.
+**The AOF hole (durability bug, fixed).** After any run past 8 KiB of writes, the server could not restart: `failed to parse length: invalid digit found in string`. Cause was in `Aof::clear()`. It opened a second handle with `write + truncate` and swapped it in as the `BufWriter`, which did two wrong things at once: the replacement was not append-mode, so it carried a real cursor, and the old `BufWriter` was dropped *after* the truncate, so its pending bytes (up to 8 KiB) were flushed at the stale cursor into an empty file. The OS fills the gap with zeros. Result on disk after a graceful shutdown: 8,992,628 NULs then 7,372 bytes of real frames (those two sum to exactly 200k SETs x 45 bytes). Replay reads byte 0, sees `\0` where `*` belongs, and refuses, which is the right call for mid-file garbage. It only ever fires past 8 KiB between snapshots, because below that the `BufWriter` never flushed and the cursor never left zero. No manual session could hit it.
 
-Fix: `clear()` now flushes the writer first, then `set_len(0)` through the same handle.
-No second handle ever exists, so the writer stays the original `O_APPEND` one. Regression
-test `clear_after_a_flushed_writer_leaves_no_hole` (two rounds past 8 KiB, asserts 0 bytes
-after each clear, no NUL in the file, clean replay). Verified it fails on the old body.
-Proven end to end: 200k SETs, graceful shutdown with six periodic snapshots during the run,
-AOF is 0 bytes after, restart answers PONG and the key reads back.
+Fix: `clear()` now flushes the writer first, then `set_len(0)` through the same handle. No second handle ever exists, so the writer stays the original `O_APPEND` one. Regression test `clear_after_a_flushed_writer_leaves_no_hole` (two rounds past 8 KiB, asserts 0 bytes after each clear, no NUL in the file, clean replay). Verified it fails on the old body. Proven end to end: 200k SETs, graceful shutdown with six periodic snapshots during the run, AOF is 0 bytes after, restart answers PONG and the key reads back.
 
-**Accept latency (fixed).** First request on a fresh connection took ~49ms: the accept
-loop slept 50ms on `WouldBlock`. Replaced with a blocking listener. The stdin thread now
-stores the flag with `Release` and then connects once to the listener's own address; the
-accept loop loads with `Acquire` after every accept and drops the stream and exits when the
-flag is set. The ordering is load-bearing: if the loop ever took the knock for a client it
-would block in `accept()` again with nobody left to connect. First request now 0.2ms.
-EOF shutdown 70ms, `quit` 38ms, with a live client 502ms (the session's 500ms read timeout).
+**Accept latency (fixed).** First request on a fresh connection took ~49ms: the accept loop slept 50ms on `WouldBlock`. Replaced with a blocking listener. The stdin thread now stores the flag with `Release` and then connects once to the listener's own address; the accept loop loads with `Acquire` after every accept and drops the stream and exits when the flag is set. The ordering is load-bearing: if the loop ever took the knock for a client it would block in `accept()` again with nobody left to connect. First request now 0.2ms. EOF shutdown 70ms, `quit` 38ms, with a live client 502ms (the session's 500ms read timeout).
 
-**Numbers** (Apple Silicon laptop, client and server local, median of 3 runs, n=50k,
-Redis 8.10.1 with persistence off):
+**Numbers** (Apple Silicon laptop, client and server local, median of 3 runs, n=50k, Redis 8.10.1 with persistence off):
 
 | conns | steller SET | Redis SET | steller GET | Redis GET |
 |---|---|---|---|---|
@@ -217,36 +170,19 @@ Redis 8.10.1 with persistence off):
 Pipelined (`-P 16`, c=1): steller ~510k/s, Redis ~216k SET / ~245k GET.
 
 How to read it honestly:
-- Steller wins below ~16 connections and plateaus at ~185k above. Redis keeps climbing.
-  Thread-per-connection around one mutex vs a single event loop, as expected.
-- The c=1 lead is a wake-up latency artifact, not processing speed. Pipelining shows Redis
-  does 216k/s when it is not waiting on a round trip. A thread blocked in `read()` wakes
-  faster than a kqueue event-loop iteration, especially on macOS. It would shrink on Linux.
-- **Not a controlled before/after.** Last night's run (different machine state) had steller
-  at 15,972 for c=50 and Redis at 82,034; tonight Redis alone is 2.4x higher with no change
-  on its side. So do not attribute steller's jump to the accept fix without an A/B against
-  the old binary in the same session.
-- Above ~c=16, `redis-benchmark` (single-threaded) is probably the ceiling, not the servers.
-  Rerun with `--threads` before claiming anything about the top end.
+- Steller wins below ~16 connections and plateaus at ~185k above. Redis keeps climbing. Thread-per-connection around one mutex vs a single event loop, as expected.
+- The c=1 lead is a wake-up latency artifact, not processing speed. Pipelining shows Redis does 216k/s when it is not waiting on a round trip. A thread blocked in `read()` wakes faster than a kqueue event-loop iteration, especially on macOS. It would shrink on Linux.
+- **Not a controlled before/after.** Last night's run (different machine state) had steller at 15,972 for c=50 and Redis at 82,034; tonight Redis alone is 2.4x higher with no change on its side. So do not attribute steller's jump to the accept fix without an A/B against the old binary in the same session.
+- Above ~c=16, `redis-benchmark` (single-threaded) is probably the ceiling, not the servers. Rerun with `--threads` before claiming anything about the top end.
 
 **Next**
 - A/B the old vs new binary back to back before writing up the accept change's effect.
 - `--threads` run to find the real ceiling; then a README benchmark section under the gif.
-- `server.rs` has no test module. Shutdown and accept behavior are smoke-tested only
-  (fresh-connection latency, EOF / quit / live-client shutdown). A unit test needs an
-  ephemeral port and a driven stdin; small design job, deferred on purpose.
+- `server.rs` has no test module. Shutdown and accept behavior are smoke-tested only (fresh-connection latency, EOF / quit / live-client shutdown). A unit test needs an ephemeral port and a driven stdin; small design job, deferred on purpose.
 
-**Provenance note.** The `aof.rs` and `server.rs` changes above were AI-written at Scotty's
-explicit request and reviewed by him, contrary to the default in `rules.md`. Both are small.
-If the point is the muscle, re-deriving either by hand is a fair exercise; the mechanism is
-written out here so that is possible without the diff.
+**Provenance note.** The `aof.rs` and `server.rs` changes above were AI-written at Scotty's explicit request and reviewed by him, contrary to the default in `rules.md`. Both are small. If the point is the muscle, re-deriving either by hand is a fair exercise; the mechanism is written out here so that is possible without the diff.
 
 ### Later that night: the dense sweep, the high end, and the ceiling
 
-Full write-up now lives in `BENCHMARKS.md` (with `demo/bench.svg`); the README carries a
-six-row summary under the gif. Headlines beyond the earlier table: crossover sits between
-32 and 64 clients; at 1,000 clients steller runs 2,004 threads / 57 MB against Redis's
-4 / 22 MB; at 4,000 it dies in `thread::spawn` (macOS caps a process at 6,144 threads,
-two per connection puts the wall near 3,000) and recovers cleanly on restart. The
-`--threads` client run is still the open item before any claim about the top end.
+Full write-up now lives in `BENCHMARKS.md` (with `demo/bench.svg`); the README carries a six-row summary under the gif. Headlines beyond the earlier table: crossover sits between 32 and 64 clients; at 1,000 clients steller runs 2,004 threads / 57 MB against Redis's 4 / 22 MB; at 4,000 it dies in `thread::spawn` (macOS caps a process at 6,144 threads, two per connection puts the wall near 3,000) and recovers cleanly on restart. The `--threads` client run is still the open item before any claim about the top end.
 
