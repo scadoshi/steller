@@ -18,10 +18,10 @@ GET / SET / DEL / EXISTS / EXPIRE / EXPIREAT / TTL / PERSIST / PING (with option
 
 Coverage is comprehensive through M4. Outstanding tests are deferred to the features that drive them:
 
-- **End-to-end `repl`.** Happy multi-command flow ending in clean disconnect, and bad-command-mid-stream proving the session continues after a SimpleError. Lower-priority since `Session::execute` + `get_command` are both individually tested.
-- **Concurrent persister stress.** Multi-threaded append + concurrent snapshot, verifying the checkpoint serialization holds. Owed once we have a real load story.
-- **Subscribed-mode session tests.** Deferred with the feature itself: subscribed-mode command restriction was never implemented in M5, so there is nothing to test yet.
-- **EXEC atomicity tests.** Once MULTI/EXEC lands, the lock-once-across-the-queue property needs a test where a second session is blocked mid-EXEC and observes a consistent before and after state.
+- End-to-end `repl`. Happy multi-command flow ending in clean disconnect, and bad-command-mid-stream proving the session continues after a SimpleError. Lower-priority since `Session::execute` + `get_command` are both individually tested.
+- Concurrent persister stress. Multi-threaded append + concurrent snapshot, verifying the checkpoint serialization holds. Owed once we have a real load story.
+- Subscribed-mode session tests. Deferred with the feature itself: subscribed-mode command restriction was never implemented in M5, so there is nothing to test yet.
+- EXEC atomicity tests. Once MULTI/EXEC lands, the lock-once-across-the-queue property needs a test where a second session is blocked mid-EXEC and observes a consistent before and after state.
 
 ## Status by milestone
 
@@ -104,11 +104,11 @@ Still deferred, deliberately: pattern subscriptions (`PSUBSCRIBE`), subscribed-m
 
 ## Cross-cutting work owed
 
-- **Graceful shutdown.** ✅ done. `Arc<AtomicBool>` flag, nonblocking listener with 50ms throttle, stdin-EOF/quit/exit as the trigger (no `ctrlc` crate), all spawned threads join cleanly. Persistence and sweeper threads check the flag on a 100ms-tick budget so shutdown latency is bounded.
-- **Async migration.** Still `std::thread` per connection. M5 shipped sync anyway, which was the right call for the muscle, so the tokio rewrite is owed but no longer blocking anything.
-- **Connection lifecycle on errors.** ✅ read-timeout wired. Accepted streams get `TcpStream::set_read_timeout(500ms)`; the timeout bubbles up to `repl`, which checks the shutdown flag between waits (`TimedOut`/`WouldBlock` → continue). So an idle client no longer wedges the repl against shutdown. `get_command` still writes errors back and continues on malformed frames (session stays alive).
-- **Service / Session error types.** `SessionError` (renamed from `ReplError`) wraps `io::Error` + `ServiceError`; `ServiceError` is the domain union of `CacheError` + `RepositoryError`. The split has held up through the AOF work, with `execute_logged` failures lifting cleanly through `?`.
-- **Logging migration.** `tracing` / `tracing-subscriber` are in `Cargo.toml` as prep. Plan: replace the scattered `println!` / `eprintln!` calls in `server.rs` and `session.rs` with structured `tracing` events (`info!` for connection lifecycle, `warn!` for recoverable errors like bad commands, `error!` for session-fatal) and add a `tracing_subscriber::fmt()` init in `main.rs`. This was meant to land before AOF and didn't, so the persist path is still debugged through `println!`.
+- Graceful shutdown. ✅ done. `Arc<AtomicBool>` flag, nonblocking listener with 50ms throttle, stdin-EOF/quit/exit as the trigger (no `ctrlc` crate), all spawned threads join cleanly. Persistence and sweeper threads check the flag on a 100ms-tick budget so shutdown latency is bounded.
+- Async migration. Still `std::thread` per connection. M5 shipped sync anyway, which was the right call for the muscle, so the tokio rewrite is owed but no longer blocking anything.
+- Connection lifecycle on errors. ✅ read-timeout wired. Accepted streams get `TcpStream::set_read_timeout(500ms)`; the timeout bubbles up to `repl`, which checks the shutdown flag between waits (`TimedOut`/`WouldBlock` → continue). So an idle client no longer wedges the repl against shutdown. `get_command` still writes errors back and continues on malformed frames (session stays alive).
+- Service / Session error types. `SessionError` (renamed from `ReplError`) wraps `io::Error` + `ServiceError`; `ServiceError` is the domain union of `CacheError` + `RepositoryError`. The split has held up through the AOF work, with `execute_logged` failures lifting cleanly through `?`.
+- Logging migration. `tracing` / `tracing-subscriber` are in `Cargo.toml` as prep. Plan: replace the scattered `println!` / `eprintln!` calls in `server.rs` and `session.rs` with structured `tracing` events (`info!` for connection lifecycle, `warn!` for recoverable errors like bad commands, `error!` for session-fatal) and add a `tracing_subscriber::fmt()` init in `main.rs`. This was meant to land before AOF and didn't, so the persist path is still debugged through `println!`.
 
 ## Hand-coding vs AI-assist allocation
 
@@ -116,22 +116,22 @@ This is the strategic split going forward. The user has already shipped LSM pers
 
 ### Worth hand-writing (novel muscle)
 
-- **TTL / EXPIRE / active sweep (M3).** ✅ done. Unified `Entry { value, expires_at }`, lazy expiry on every read path plus an active sweep. The sweep holds the lock for the whole pass, which is defensible at this scale; would switch to snapshot-then-re-check under load.
-- **Graceful shutdown.** ✅ done. `Arc<AtomicBool>` + nonblocking listener + stdin-EOF/quit trigger + JoinHandle collection and join on exit.
-- **AOF rewrite/compaction design.** The *consistent-snapshot-without-blocking-writers* problem is still novel. Sketch the algorithm by hand (fork+COW vs. clone-the-HashMap vs. copy-on-write structures, how to buffer concurrent writes during rewrite, atomic swap at the end) before writing code. The snapshot strategy is the interesting bit; file mechanics are mechanical.
-- **Async/tokio migration.** Paradigm shift, not a feature. Hand-write to feel the model and to have the lived sync→async rewrite experience.
-- **Pub/Sub fan-out (M5).** Different concurrency shape than request/response. mpsc-per-subscriber vs. broadcast tradeoffs, slow-subscriber handling, subscription registry under contention. Easier after async lands (tokio broadcast > std::sync::mpsc fan-out).
-- **MULTI/EXEC (M6).** First per-session state machine the codebase has. Lock-once-across-the-queue is the atomicity story; the AOF-envelope decision is the interesting secondary call (preserve atomicity on replay vs. flatten and lose it). Decoupled from async; can land before or after.
+- TTL / EXPIRE / active sweep (M3). ✅ done. Unified `Entry { value, expires_at }`, lazy expiry on every read path plus an active sweep. The sweep holds the lock for the whole pass, which is defensible at this scale; would switch to snapshot-then-re-check under load.
+- Graceful shutdown. ✅ done. `Arc<AtomicBool>` + nonblocking listener + stdin-EOF/quit trigger + JoinHandle collection and join on exit.
+- AOF rewrite/compaction design. The *consistent-snapshot-without-blocking-writers* problem is still novel. Sketch the algorithm by hand (fork+COW vs. clone-the-HashMap vs. copy-on-write structures, how to buffer concurrent writes during rewrite, atomic swap at the end) before writing code. The snapshot strategy is the interesting bit; file mechanics are mechanical.
+- Async/tokio migration. Paradigm shift, not a feature. Hand-write to feel the model and to have the lived sync→async rewrite experience.
+- Pub/Sub fan-out (M5). Different concurrency shape than request/response. mpsc-per-subscriber vs. broadcast tradeoffs, slow-subscriber handling, subscription registry under contention. Easier after async lands (tokio broadcast > std::sync::mpsc fan-out).
+- MULTI/EXEC (M6). First per-session state machine the codebase has. Lock-once-across-the-queue is the atomicity story; the AOF-envelope decision is the interesting secondary call (preserve atomicity on replay vs. flatten and lose it). Decoupled from async; can land before or after.
 
 ### AI-jet (rehearsed in chickadee or mechanical extension)
 
-- **AOF base path.** Append every state-mutating command, fsync, replay on startup. Same shape as chickadee's WAL-to-memtable replay with `Command` swapped for `Entry`. Mechanical.
-- **File atomicity.** Tempfile + rename. Known.
-- **Background task scaffolding.** Periodic-loop spawn pattern is already in `server.rs`.
-- **More commands.** INCR, DECR, MGET, APPEND, STRLEN. Proven extensible in <14 minutes per command.
-- **Logging migration.** `tracing` macros replacing `println!`/`eprintln!`. Pure mechanical.
-- **Test gap closure.** Cache unit tests, end-to-end repl tests with scripted RESP bytes. Rote.
-- **README updates.** Writing, not engineering.
+- AOF base path. Append every state-mutating command, fsync, replay on startup. Same shape as chickadee's WAL-to-memtable replay with `Command` swapped for `Entry`. Mechanical.
+- File atomicity. Tempfile + rename. Known.
+- Background task scaffolding. Periodic-loop spawn pattern is already in `server.rs`.
+- More commands. INCR, DECR, MGET, APPEND, STRLEN. Proven extensible in <14 minutes per command.
+- Logging migration. `tracing` macros replacing `println!`/`eprintln!`. Pure mechanical.
+- Test gap closure. Cache unit tests, end-to-end repl tests with scripted RESP bytes. Rote.
+- README updates. Writing, not engineering.
 
 ### Strategic order
 
@@ -172,7 +172,7 @@ Pipelined (`-P 16`, c=1): steller ~510k/s, Redis ~216k SET / ~245k GET.
 How to read it honestly:
 - Steller wins below ~16 connections and plateaus at ~185k above. Redis keeps climbing. Thread-per-connection around one mutex vs a single event loop, as expected.
 - The c=1 lead is a wake-up latency artifact, not processing speed. Pipelining shows Redis does 216k/s when it is not waiting on a round trip. A thread blocked in `read()` wakes faster than a kqueue event-loop iteration, especially on macOS. It would shrink on Linux.
-- **Not a controlled before/after.** Last night's run (different machine state) had steller at 15,972 for c=50 and Redis at 82,034; tonight Redis alone is 2.4x higher with no change on its side. So do not attribute steller's jump to the accept fix without an A/B against the old binary in the same session.
+- Not a controlled before/after. Last night's run (different machine state) had steller at 15,972 for c=50 and Redis at 82,034; tonight Redis alone is 2.4x higher with no change on its side. So do not attribute steller's jump to the accept fix without an A/B against the old binary in the same session.
 - Above ~c=16, `redis-benchmark` (single-threaded) is probably the ceiling, not the servers. Rerun with `--threads` before claiming anything about the top end.
 
 **Next**

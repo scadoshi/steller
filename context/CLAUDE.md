@@ -39,8 +39,8 @@ See `context/rules.md`. The **AI collaboration mode** section at the top is mand
 
 The short version:
 
-- **Write by hand:** RESP parser, command dispatch, core data structures, connection loop.
-- **AI lane:** boilerplate (Cargo.toml deps, test scaffolding), explanations, debugging help *after* you've read the compiler error yourself.
-- **AI mode:** guide educationally. No straight answers, no code in `.rs` files unless the user explicitly asks. Lead with questions. Affirm correctness when it's right rather than pushing toward churn.
-- **Read compiler errors first.** Always.
-- **Commit small.** One feature, one commit.
+- Write by hand: RESP parser, command dispatch, core data structures, connection loop.
+- AI lane: boilerplate (Cargo.toml deps, test scaffolding), explanations, debugging help *after* you've read the compiler error yourself.
+- AI mode: guide educationally. No straight answers, no code in `.rs` files unless the user explicitly asks. Lead with questions. Affirm correctness when it's right rather than pushing toward churn.
+- Read compiler errors first. Always.
+- Commit small. One feature, one commit.
