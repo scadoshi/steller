@@ -6,15 +6,13 @@
 //! element is an array, an inner array where a key belongs. Verb-level errors (wrong arity,
 //! non-numeric TTL, unknown verb) surface as [`CommandError`].
 
-use crate::{
-    domain::{
-        command::{Command, CommandError},
-        time::{Milliseconds, Seconds},
-    },
-    resp::frame::Frame,
-};
 use std::time::SystemTimeError;
+
 use thiserror::Error;
+
+use crate::domain::command::{Command, CommandError};
+use crate::domain::time::{Milliseconds, Seconds};
+use crate::resp::frame::Frame;
 
 /// Next frame from the iterator, which must be a bulk string.
 macro_rules! next_bulk {
@@ -243,7 +241,8 @@ impl TryFrom<Frame> for Command {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::command::cache::{CacheCommand, write::WriteCommand};
+    use crate::domain::command::cache::CacheCommand;
+    use crate::domain::command::cache::write::WriteCommand;
 
     // ---------- ok cases ----------
 

@@ -10,6 +10,7 @@
 //! the dependency arrow outward.
 
 use std::time::{SystemTime, SystemTimeError, UNIX_EPOCH};
+
 use wincode::{SchemaRead, SchemaWrite};
 
 /// A second count, straight off the wire. Convert to [`Milliseconds`] before it goes

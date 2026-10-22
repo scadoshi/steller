@@ -5,9 +5,14 @@
 //! That's the entire surface a client uses to send commands; outbound reply types
 //! (simple strings, errors, integers, null-bulk) live in the outbound layer.
 
-use crate::{domain::command::cache::write::WriteCommand, resp::crlf::Crlf};
-use std::{io::Write, num::ParseIntError, str::Utf8Error};
+use std::io::Write;
+use std::num::ParseIntError;
+use std::str::Utf8Error;
+
 use thiserror::Error;
+
+use crate::domain::command::cache::write::WriteCommand;
+use crate::resp::crlf::Crlf;
 
 type IoError = std::io::Error;
 

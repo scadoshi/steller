@@ -2,15 +2,16 @@ pub mod cache;
 pub mod channel;
 pub mod outcome;
 
-use crate::domain::{
-    command::{
-        cache::{CacheCommand, read::ReadCommand, write::WriteCommand},
-        channel::ChannelCommand,
-    },
-    time::Milliseconds,
-};
-use std::{num::ParseIntError, str::Utf8Error};
+use std::num::ParseIntError;
+use std::str::Utf8Error;
+
 use thiserror::Error;
+
+use crate::domain::command::cache::CacheCommand;
+use crate::domain::command::cache::read::ReadCommand;
+use crate::domain::command::cache::write::WriteCommand;
+use crate::domain::command::channel::ChannelCommand;
+use crate::domain::time::Milliseconds;
 
 #[derive(Error, Debug)]
 pub enum CommandError {

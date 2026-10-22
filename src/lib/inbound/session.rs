@@ -8,31 +8,21 @@
 //! subscriber's mpsc, and the subscriber's `WriteHalf` delivers them while its `ReadHalf`
 //! is still blocked reading from its own client. [`Session::repl`] wires the two together.
 
-use crate::{
-    domain::{
-        channels::{Channels, ChannelsError, Subscriber},
-        command::{
-            Command,
-            channel::{ChannelCommand, ChannelCommandOutcome, SubUnsubInnerEntry},
-        },
-        ports::{CacheService, ServiceError},
-    },
-    resp::{
-        frame::{Frame, FrameError},
-        reply::{Replies, Reply, SimpleInner},
-    },
-};
-use std::{
-    collections::HashSet,
-    io::{BufReader, BufWriter, Error as IoError, ErrorKind as IoErrorKind, Read, Write},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, RecvError, SendError, Sender, channel},
-    },
-    thread::{JoinHandle, spawn},
-};
+use std::collections::HashSet;
+use std::io::{BufReader, BufWriter, Error as IoError, ErrorKind as IoErrorKind, Read, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvError, SendError, Sender, channel};
+use std::thread::{JoinHandle, spawn};
+
 use thiserror::Error;
+
+use crate::domain::channels::{Channels, ChannelsError, Subscriber};
+use crate::domain::command::Command;
+use crate::domain::command::channel::{ChannelCommand, ChannelCommandOutcome, SubUnsubInnerEntry};
+use crate::domain::ports::{CacheService, ServiceError};
+use crate::resp::frame::{Frame, FrameError};
+use crate::resp::reply::{Replies, Reply, SimpleInner};
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -416,12 +406,13 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        domain::{cache::Cache, command::channel::ChannelCommand, service::Service},
-        test_support::{RecordingRepo, SharedWriter},
-    };
     use std::io::Cursor;
+
+    use super::*;
+    use crate::domain::cache::Cache;
+    use crate::domain::command::channel::ChannelCommand;
+    use crate::domain::service::Service;
+    use crate::test_support::{RecordingRepo, SharedWriter};
 
     type TestService = Service<RecordingRepo>;
 

@@ -7,24 +7,19 @@
 //! inbound parsing path. The log is, in effect, a transcript of every mutation; replay is
 //! "re-send that transcript."
 
-use crate::{
-    domain::{
-        cache::{Cache, CacheError},
-        command::{Command, cache::write::WriteCommand},
-        ports::RepositoryError,
-    },
-    outbound::persister::persister_inner::PersisterInner,
-    resp::{
-        command::CommandFromFrameError,
-        frame::{Frame, FrameError},
-    },
-};
-use std::{
-    fs::File,
-    io::{Read, Write},
-    ops::Deref,
-};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::ops::Deref;
+
 use thiserror::Error;
+
+use crate::domain::cache::{Cache, CacheError};
+use crate::domain::command::Command;
+use crate::domain::command::cache::write::WriteCommand;
+use crate::domain::ports::RepositoryError;
+use crate::outbound::persister::persister_inner::PersisterInner;
+use crate::resp::command::CommandFromFrameError;
+use crate::resp::frame::{Frame, FrameError};
 
 type IoError = std::io::Error;
 
@@ -136,15 +131,13 @@ impl Aof {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+
     use super::*;
-    use crate::{
-        domain::{cache::Entry, time::Milliseconds},
-        test_support::TempPath,
-    };
-    use std::{
-        fs::{self, OpenOptions},
-        io::Write,
-    };
+    use crate::domain::cache::Entry;
+    use crate::domain::time::Milliseconds;
+    use crate::test_support::TempPath;
 
     fn fresh() -> (Aof, TempPath) {
         let temp = TempPath::new("aof");

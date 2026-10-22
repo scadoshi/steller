@@ -16,16 +16,16 @@ pub mod aof;
 mod persister_inner;
 pub mod snapshot;
 
-use crate::{
-    domain::{
-        cache::Cache,
-        command::cache::write::WriteCommand,
-        ports::{CacheRepository, RepositoryError},
-    },
-    outbound::persister::{aof::Aof, persister_inner::PersisterInner, snapshot::Snapshot},
-};
 use std::path::PathBuf;
+
 use thiserror::Error;
+
+use crate::domain::cache::Cache;
+use crate::domain::command::cache::write::WriteCommand;
+use crate::domain::ports::{CacheRepository, RepositoryError};
+use crate::outbound::persister::aof::Aof;
+use crate::outbound::persister::persister_inner::PersisterInner;
+use crate::outbound::persister::snapshot::Snapshot;
 
 type IoError = std::io::Error;
 
@@ -97,9 +97,12 @@ impl CacheRepository for Persister {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::io::Write;
+
     use super::*;
-    use crate::{domain::cache::Entry, test_support::TempPath};
-    use std::{fs, io::Write};
+    use crate::domain::cache::Entry;
+    use crate::test_support::TempPath;
 
     struct Built {
         persister: Persister,

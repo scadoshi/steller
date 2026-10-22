@@ -11,15 +11,13 @@
 //! vocabulary at the boundary, via the `From` impls in the outbound layer, so the domain
 //! never names an outbound error type.
 
-use crate::domain::{
-    cache::{Cache, CacheError},
-    channels::ChannelsError,
-    command::{
-        cache::{CacheCommand, write::WriteCommand},
-        outcome::CommandOutcome,
-    },
-};
 use thiserror::Error;
+
+use crate::domain::cache::{Cache, CacheError};
+use crate::domain::channels::ChannelsError;
+use crate::domain::command::cache::CacheCommand;
+use crate::domain::command::cache::write::WriteCommand;
+use crate::domain::command::outcome::CommandOutcome;
 
 /// Failure crossing the persistence boundary, in terms the domain can react to rather
 /// than the adapter's own taxonomy.

@@ -6,18 +6,17 @@
 //! the same filesystem, so a crash mid-write can never leave a half-written snapshot. You
 //! always have either the complete old one or the complete new one.
 
-use crate::{
-    domain::{cache::Entry, ports::RepositoryError},
-    outbound::persister::persister_inner::PersisterInner,
-};
-use std::{
-    collections::HashMap,
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    ops::Deref,
-};
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::ops::Deref;
+
 use thiserror::Error;
 use wincode::{ReadError, WriteError};
+
+use crate::domain::cache::Entry;
+use crate::domain::ports::RepositoryError;
+use crate::outbound::persister::persister_inner::PersisterInner;
 
 type IoError = std::io::Error;
 
@@ -93,7 +92,8 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{domain::time::Milliseconds, test_support::TempPath};
+    use crate::domain::time::Milliseconds;
+    use crate::test_support::TempPath;
 
     fn fresh() -> (Snapshot, TempPath) {
         let temp = TempPath::new("snapshot");

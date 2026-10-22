@@ -1,20 +1,15 @@
 //! Shared test helpers: fakes, RAII temp files, and writer adapters used by the unit
 //! tests across modules. Compiled only under `#[cfg(test)]`.
 
-use crate::domain::{
-    cache::Cache,
-    command::cache::write::WriteCommand,
-    ports::{CacheRepository, RepositoryError},
-};
-use std::{
-    fs,
-    io::Write,
-    path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+
+use crate::domain::cache::Cache;
+use crate::domain::command::cache::write::WriteCommand;
+use crate::domain::ports::{CacheRepository, RepositoryError};
 
 /// [`CacheRepository`] fake that records every appended command. Snapshot calls are no-ops.
 #[derive(Clone, Default)]

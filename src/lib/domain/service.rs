@@ -6,11 +6,10 @@
 //! Generic over `CR: CacheRepository`, so the concrete persister is a plug-in and tests
 //! can substitute a recording fake.
 
-use crate::domain::{
-    cache::Cache,
-    command::{cache::CacheCommand, outcome::CommandOutcome},
-    ports::{CacheRepository, CacheService, ServiceError},
-};
+use crate::domain::cache::Cache;
+use crate::domain::command::cache::CacheCommand;
+use crate::domain::command::outcome::CommandOutcome;
+use crate::domain::ports::{CacheRepository, CacheService, ServiceError};
 
 /// Command orchestrator. Both fields are shared handles, so cloning is cheap and every
 /// session thread can hold a copy pointing at the same cache and log.
@@ -56,14 +55,11 @@ impl<CR: CacheRepository> CacheService for Service<CR> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        domain::{
-            cache::Entry,
-            command::cache::{read::ReadCommand, write::WriteCommand},
-            time::Milliseconds,
-        },
-        test_support::RecordingRepo,
-    };
+    use crate::domain::cache::Entry;
+    use crate::domain::command::cache::read::ReadCommand;
+    use crate::domain::command::cache::write::WriteCommand;
+    use crate::domain::time::Milliseconds;
+    use crate::test_support::RecordingRepo;
 
     fn build() -> (Service<RecordingRepo>, Cache, RecordingRepo) {
         let cache = Cache::default();

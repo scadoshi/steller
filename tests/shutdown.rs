@@ -7,13 +7,11 @@
 // helpers below are neither. The whole file is test code, so allow them here.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
-use std::{
-    io::{Read, Write},
-    net::TcpStream,
-    process::{Child, Command, Stdio},
-    thread::sleep,
-    time::{Duration, Instant},
-};
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::process::{Child, Command, Stdio};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 const ADDRESS: &str = "127.0.0.1:3000";
 

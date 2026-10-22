@@ -6,12 +6,10 @@
 //! one file handle is shared across threads and writes serialize. The `path` sticks around
 //! for the recovery paths, which open their own transient handles.
 
-use std::{
-    fs::{File, OpenOptions, create_dir_all},
-    io::BufWriter,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::fs::{File, OpenOptions, create_dir_all};
+use std::io::BufWriter;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 type IoError = std::io::Error;
 

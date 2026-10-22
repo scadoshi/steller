@@ -4,6 +4,7 @@
 //! `exit` returns success.
 
 use std::process::ExitCode;
+
 use steller::inbound::server::Server;
 
 fn main() -> ExitCode {

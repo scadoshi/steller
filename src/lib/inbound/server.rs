@@ -20,27 +20,22 @@
 //! stream, and stops. (The listener used to be non-blocking with a 50ms sleep between
 //! polls, which put up to 50ms on every new connection's first request.)
 
-use crate::{
-    domain::{
-        cache::Cache, channels::Channels, ports::CacheRepository, service::Service as CacheService,
-    },
-    inbound::session::Session,
-    outbound::persister::Persister,
-};
-use signal_hook::{
-    consts::{SIGINT, SIGTERM},
-    iterator::Signals,
-};
-use std::{
-    io::IsTerminal,
-    net::{SocketAddr, TcpListener, TcpStream},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread::{JoinHandle, sleep, spawn},
-    time::Duration,
-};
+use std::io::IsTerminal;
+use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread::{JoinHandle, sleep, spawn};
+use std::time::Duration;
+
+use signal_hook::consts::{SIGINT, SIGTERM};
+use signal_hook::iterator::Signals;
+
+use crate::domain::cache::Cache;
+use crate::domain::channels::Channels;
+use crate::domain::ports::CacheRepository;
+use crate::domain::service::Service as CacheService;
+use crate::inbound::session::Session;
+use crate::outbound::persister::Persister;
 
 /// Address the server listens on.
 const BIND_ADDRESS: &str = "127.0.0.1:3000";

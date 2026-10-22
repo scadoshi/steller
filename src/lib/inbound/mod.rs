@@ -5,13 +5,9 @@
 //!
 //! The `From` impls below are the other direction: outcome to wire reply.
 
-use crate::{
-    domain::command::{
-        channel::{ChannelCommandOutcome, SubUnsubInnerEntry},
-        outcome::{CommandOutcome, TtlOutcome},
-    },
-    resp::reply::{Replies, Reply, SimpleInner},
-};
+use crate::domain::command::channel::{ChannelCommandOutcome, SubUnsubInnerEntry};
+use crate::domain::command::outcome::{CommandOutcome, TtlOutcome};
+use crate::resp::reply::{Replies, Reply, SimpleInner};
 
 pub mod server;
 pub mod session;

@@ -16,21 +16,19 @@
 //! The cache has no persistence methods. Durability lives in `outbound::persister`: a
 //! `wincode` snapshot of the map plus an append-only command log replayed on startup.
 
-use crate::domain::{
-    command::{
-        cache::{CacheCommand, read::ReadCommand, write::WriteCommand},
-        outcome::{CommandOutcome, TtlOutcome},
-    },
-    time::Milliseconds,
-};
-use std::{
-    collections::HashMap,
-    ops::Deref,
-    sync::{Arc, Mutex},
-    time::SystemTimeError,
-};
+use std::collections::HashMap;
+use std::ops::Deref;
+use std::sync::{Arc, Mutex};
+use std::time::SystemTimeError;
+
 use thiserror::Error;
 use wincode::{SchemaRead, SchemaWrite};
+
+use crate::domain::command::cache::CacheCommand;
+use crate::domain::command::cache::read::ReadCommand;
+use crate::domain::command::cache::write::WriteCommand;
+use crate::domain::command::outcome::{CommandOutcome, TtlOutcome};
+use crate::domain::time::Milliseconds;
 
 /// Failure inside a [`Cache`] operation.
 #[derive(Debug, Error)]

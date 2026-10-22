@@ -1,10 +1,9 @@
 //! Outbound RESP: the [`Reply`] enum the server emits and the [`SimpleInner`] newtype
 //! that guards RESP's "no CR/LF in simple frames" invariant at construction time.
 
-use std::{
-    io::Write,
-    ops::{Deref, DerefMut},
-};
+use std::io::Write;
+use std::ops::{Deref, DerefMut};
+
 use thiserror::Error;
 
 /// Errors returned by [`SimpleInner::try_from`] when payload bytes contain a

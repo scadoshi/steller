@@ -8,16 +8,12 @@
 //! before anything gets here, so a published message is just bytes pushed into each
 //! subscriber's channel.
 
-use thiserror::Error;
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
+use std::sync::mpsc::{SendError, Sender};
+use std::sync::{Arc, Mutex};
 
-use std::{
-    collections::HashMap,
-    ops::{Deref, DerefMut},
-    sync::{
-        Arc, Mutex,
-        mpsc::{SendError, Sender},
-    },
-};
+use thiserror::Error;
 
 /// One session's delivery endpoint: its id, which is the registry key, plus the sending
 /// half of the mpsc its `WriteHalf` drains to the socket.
@@ -151,8 +147,9 @@ impl Channels {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::mpsc::{Receiver, channel};
+
+    use super::*;
 
     /// Register a fresh subscriber on `channel_id` and hand back the receiver end so the
     /// test can assert what got delivered.
