@@ -384,11 +384,11 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
                 Err(e) => break Err(e),
             }
         };
-        rh.unsubscribe_from_all().iter().for_each(|r| {
+        for r in &rh.unsubscribe_from_all() {
             if let Err(e) = r {
                 eprintln!("failed to unsubscribe: {e}");
             }
-        });
+        }
 
         // Drop the read half, and with it this session's `Sender`, before joining. The
         // writer thread is parked inside `recv()`, which only returns once every sender is
