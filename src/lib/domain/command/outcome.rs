@@ -25,7 +25,7 @@ pub enum CommandOutcome {
     Bool(bool),
     /// A `TTL` result.
     Ttl(TtlOutcome),
-    /// A `PING` reply: `+PONG`, or the message as a simple string with CR and LF removed.
+    /// A `PING` reply: `+PONG`, or the message echoed back as a bulk string, byte for byte.
     Pong(Option<Vec<u8>>),
     /// A count sent as `:n`. `EXISTS` uses it.
     Integer(i64),

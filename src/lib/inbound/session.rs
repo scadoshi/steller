@@ -21,6 +21,7 @@ use thiserror::Error;
 use crate::domain::channels::{Channels, ChannelsError, Subscriber};
 use crate::domain::command::Command;
 use crate::domain::command::channel::{ChannelCommand, ChannelCommandOutcome, SubUnsubInnerEntry};
+use crate::domain::command::outcome::CommandOutcome;
 use crate::domain::ports::{Execute, ExecuteError};
 use crate::resp::frame::{Frame, FrameError};
 use crate::resp::reply::{Replies, Reply, SimpleInner};
@@ -448,9 +449,8 @@ impl<R: Read, W: Write + Send + 'static, E: Execute> Session<R, W, E> {
                     }
                 }
                 Ok(Some(Command::Ping { message })) => {
-                    let m = message
-                        .unwrap_or_else(|| Reply::SimpleString(SimpleInner::pong()).to_bytes());
-                    match rh.send(m) {
+                    let reply = Reply::from(CommandOutcome::Pong(message));
+                    match rh.send(reply.to_bytes()) {
                         Ok(()) => {}
                         Err(e) => break Err(ReadHalfError::Send(e)),
                     }
@@ -536,6 +536,43 @@ mod tests {
             }
             ChannelCommandOutcome::Publish { .. } => panic!("not a sub/unsub outcome"),
         }
+    }
+
+    // ---------- ping ----------
+
+    /// Runs `input` through a whole session and returns every byte the client got back.
+    fn replies_to(input: &[u8]) -> Vec<u8> {
+        let writer = SharedWriter::default();
+        let session = Session::new(
+            1,
+            Cursor::new(input.to_vec()),
+            writer.clone(),
+            Executor::new(Cache::default(), RecordingRepo::default()),
+            Channels::new(),
+        );
+        session.repl(&Arc::new(AtomicBool::new(false))).unwrap();
+        writer.bytes()
+    }
+
+    #[test]
+    fn ping_answers_pong_as_a_simple_string() {
+        assert_eq!(replies_to(b"*1\r\n$4\r\nPING\r\n"), b"+PONG\r\n");
+    }
+
+    #[test]
+    fn ping_with_a_message_echoes_it_as_a_bulk_string() {
+        assert_eq!(
+            replies_to(b"*2\r\n$4\r\nPING\r\n$5\r\nhello\r\n"),
+            b"$5\r\nhello\r\n"
+        );
+    }
+
+    #[test]
+    fn ping_echoes_crlf_in_its_message_unchanged() {
+        assert_eq!(
+            replies_to(b"*2\r\n$4\r\nPING\r\n$4\r\na\r\nb\r\n"),
+            b"$4\r\na\r\nb\r\n"
+        );
     }
 
     // ---------- subscribe ----------

@@ -19,7 +19,7 @@ impl From<CommandOutcome> for Reply {
             Co::Value(Some(value)) => Self::BulkString(value),
             Co::Value(None) => Self::NullBulk,
             Co::Ok => Self::SimpleString(SimpleInner::ok()),
-            Co::Pong(Some(message)) => Self::SimpleString(SimpleInner::sanitized(message)),
+            Co::Pong(Some(message)) => Self::BulkString(message),
             Co::Pong(None) => Self::SimpleString(SimpleInner::pong()),
             Co::Bool(bool) => Self::Integer(i64::from(bool)),
             Co::Ttl(TtlOutcome::KeyNotFound) => Self::Integer(-2),
@@ -122,18 +122,18 @@ mod tests {
     }
 
     #[test]
-    fn pong_some_maps_to_simple_string_sanitized() {
+    fn pong_some_maps_to_bulk_string() {
         assert_eq!(
             Reply::from(Co::Pong(Some(b"hi".to_vec()))),
-            Reply::SimpleString(SimpleInner::sanitized(b"hi".to_vec()))
+            Reply::BulkString(b"hi".to_vec())
         );
     }
 
     #[test]
-    fn pong_some_with_crlf_is_sanitized() {
+    fn pong_some_with_crlf_keeps_its_bytes() {
         assert_eq!(
             Reply::from(Co::Pong(Some(b"hi\r\nthere".to_vec()))),
-            Reply::SimpleString(SimpleInner::sanitized(b"hi\r\nthere".to_vec()))
+            Reply::BulkString(b"hi\r\nthere".to_vec())
         );
     }
 
