@@ -44,6 +44,10 @@ const BIND_ADDRESS: &str = "127.0.0.1:3000";
 /// see it. `Release` pairs with the `Acquire` load in the accept loop, which must not
 /// mistake the knock for a client: spawning a session for it and blocking in `accept()`
 /// again hangs shutdown with nobody left to connect.
+#[expect(
+    clippy::print_stderr,
+    reason = "the server's own log lines go to its terminal and the service journal"
+)]
 fn trigger_shutdown(shutdown: &Arc<AtomicBool>, wake_address: SocketAddr) {
     shutdown.store(true, Ordering::Release);
     if let Err(e) = TcpStream::connect(wake_address) {
@@ -60,6 +64,11 @@ impl Server {
     ///
     /// `Err` only on fatal setup: a failed bind or a snapshot that won't load.
     /// Per-connection errors are logged and stay put.
+    #[expect(
+        clippy::print_stdout,
+        clippy::print_stderr,
+        reason = "the server's own log lines go to its terminal and the service journal"
+    )]
     #[expect(
         clippy::too_many_lines,
         reason = "startup wires the persister and then each thread in order; one place keeps that sequence readable"

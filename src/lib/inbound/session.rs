@@ -321,6 +321,11 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
     /// leaves dead senders behind. The writer thread is joined before this returns.
     ///
     /// [`unsubscribe_from_all`]: ReadHalf::unsubscribe_from_all
+    #[expect(
+        clippy::print_stdout,
+        clippy::print_stderr,
+        reason = "the server's own log lines go to its terminal and the service journal"
+    )]
     pub fn repl(self, shutdown_signal: &Arc<AtomicBool>) -> Result<(), SessionError> {
         let id = self.id;
         let (mut rh, mut wh) = self.split();

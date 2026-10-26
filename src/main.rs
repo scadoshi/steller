@@ -7,6 +7,10 @@ use std::process::ExitCode;
 
 use steller::inbound::server::Server;
 
+#[expect(
+    clippy::print_stderr,
+    reason = "a fatal error is one stderr line a service manager reads, as the module doc says"
+)]
 fn main() -> ExitCode {
     if let Err(e) = Server::run() {
         eprintln!("Failed to run: {e}");
