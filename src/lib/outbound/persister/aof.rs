@@ -71,6 +71,15 @@ impl From<PersisterInner> for Aof {
 impl Aof {
     /// Encode one mutation as a RESP frame and append it to the log. Holds the writer lock
     /// across the write so a frame is never interleaved with another thread's append.
+    ///
+    /// The frame goes into a `BufWriter` and is not flushed here, so it reaches the file
+    /// when the buffer fills, on [`Aof::clear`], or when the last handle drops.
+    ///
+    /// # Errors
+    ///
+    /// [`AofError::MutexPoisoned`] if the writer lock is poisoned, and [`AofError::Io`] if
+    /// writing fails. Because of the buffer, an I/O error usually surfaces on the append
+    /// that overflows it, not the one that caused it.
     pub fn append(&self, command: WriteCommand) -> Result<(), AofError> {
         let mut guard = self.writer.lock().map_err(|_| AofError::MutexPoisoned)?;
         Frame::from(command).write_to(&mut *guard)?;
@@ -86,6 +95,13 @@ impl Aof {
     /// unknown command is fatal, because in our own log those mean real corruption rather
     /// than a normal partial write. Runs at startup before clients connect, so
     /// per-command locking inside `execute` is fine. There is no concurrency to coordinate.
+    ///
+    /// # Errors
+    ///
+    /// [`AofError::Io`] if the log file cannot be opened or read. [`AofError::Frame`] for a
+    /// parse failure other than a torn tail, and [`AofError::Command`] for a frame that
+    /// does not lift into a command. [`AofError::Cache`] if applying a command fails. Every
+    /// command before the failing one has already been applied to `cache`.
     pub fn replay(&self, cache: &Cache) -> Result<(), AofError> {
         let aof = {
             let mut aof = Vec::<u8>::new();
@@ -121,6 +137,12 @@ impl Aof {
     /// at the front of the log that replay cannot parse. That hole only appears once more
     /// than the `BufWriter`'s 8 KiB has gone through since the last clear, which is why no
     /// small manual session ever saw it and the first benchmark did.
+    ///
+    /// # Errors
+    ///
+    /// [`AofError::MutexPoisoned`] if the writer lock is poisoned, and [`AofError::Io`] if
+    /// the flush or the truncate fails. A failed flush returns before truncating, so the
+    /// log keeps its contents.
     pub fn clear(&self) -> Result<(), AofError> {
         let mut guard = self.writer.lock().map_err(|_| AofError::MutexPoisoned)?;
         guard.flush()?;

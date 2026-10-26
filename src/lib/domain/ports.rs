@@ -39,8 +39,18 @@ pub enum RepositoryError {
 /// every session thread and live for the whole process.
 pub trait CacheRepository: Clone + Send + Sync + 'static {
     /// Durably log one state-mutating command.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError`] when the implementation cannot record the command, such as a
+    /// failed write or a poisoned lock on the log. The cache has already applied it by then.
     fn append(&self, command: WriteCommand) -> Result<(), RepositoryError>;
     /// Snapshot the cache and compact the log.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError`] when the implementation cannot lock `cache`, write the snapshot,
+    /// or clear the log.
     fn snapshot(&self, cache: &Cache) -> Result<(), RepositoryError>;
 }
 
@@ -73,7 +83,18 @@ pub enum ExecuteError {
 pub trait Execute: Clone + Send + Sync + 'static {
     /// Run a command against the cache only, with no persistence. This is what replay
     /// uses, where re-logging would duplicate the log.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecuteError::Cache`] when the cache operation fails. Nothing is logged, so
+    /// [`ExecuteError::Repository`] does not occur here.
     fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, ExecuteError>;
     /// Run a command and, if it mutates state, append it to the log. The live client path.
+    ///
+    /// # Errors
+    ///
+    /// [`ExecuteError::Cache`] when the cache operation fails, in which case nothing is
+    /// logged. [`ExecuteError::Repository`] when the append fails, by which point the cache
+    /// has already applied the mutation.
     fn execute_logged(&self, command: CacheCommand) -> Result<CommandOutcome, ExecuteError>;
 }

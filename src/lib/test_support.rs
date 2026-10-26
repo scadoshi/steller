@@ -14,6 +14,7 @@ use crate::domain::ports::{CacheRepository, RepositoryError};
 /// [`CacheRepository`] fake that records every appended command. Snapshot calls are no-ops.
 #[derive(Debug, Clone, Default)]
 pub struct RecordingRepo {
+    /// Every command passed to `append`, in call order. Shared across clones.
     pub appended: Arc<Mutex<Vec<WriteCommand>>>,
 }
 
@@ -33,6 +34,11 @@ impl CacheRepository for RecordingRepo {
 pub struct SharedWriter(pub Arc<Mutex<Vec<u8>>>);
 
 impl SharedWriter {
+    /// A copy of everything written so far.
+    ///
+    /// # Panics
+    ///
+    /// If a thread panicked while writing and poisoned the buffer's lock.
     pub fn bytes(&self) -> Vec<u8> {
         self.0.lock().unwrap().clone()
     }
@@ -54,6 +60,8 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// on drop so tests don't litter `/tmp`.
 #[derive(Debug)]
 pub struct TempPath {
+    /// A unique path in the system temp directory. Nothing exists there until a test
+    /// creates it.
     pub path: PathBuf,
 }
 

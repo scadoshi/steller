@@ -61,6 +61,11 @@ impl From<PersisterInner> for Snapshot {
 impl Snapshot {
     /// Load the snapshot into a map. An empty file (no snapshot taken yet) yields an empty
     /// map rather than an error.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotError::Io`] if the file cannot be opened or read, and
+    /// [`SnapshotError::Read`] if it is not empty and does not decode as a map.
     pub fn load(&self) -> Result<HashMap<Vec<u8>, Entry>, SnapshotError> {
         let mut bytes = Vec::<u8>::new();
         File::open(&*self.path)?.read_to_end(&mut bytes)?;
@@ -75,6 +80,15 @@ impl Snapshot {
     /// Atomically write the map as the new snapshot: serialize to a `.tmp` sibling, then
     /// `rename` it over the live file. The caller passes the map behind the held cache
     /// lock so the dump is a consistent point-in-time view.
+    ///
+    /// The temp file is not synced before the rename, so the rename is atomic against a
+    /// crash of this process but not against power loss.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotError::Io`] if the temp file cannot be created or written, or the rename
+    /// fails, and [`SnapshotError::Write`] if the map does not serialize. The live snapshot
+    /// is untouched in every case; a failed write can leave the `.tmp` file behind.
     pub fn store(&self, guard: &HashMap<Vec<u8>, Entry>) -> Result<(), SnapshotError> {
         let temp_path = self.path.with_extension("tmp");
         let mut temp = OpenOptions::new()

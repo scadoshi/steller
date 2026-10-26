@@ -87,6 +87,10 @@ impl Deref for Cache {
 }
 
 impl Cache {
+    /// A cache over `data`, usually the map a snapshot load produced.
+    ///
+    /// Deadlines are not checked here. Entries in `data` that have already expired stay
+    /// until a read drops them or [`Cache::remove_expired`] sweeps them.
     pub fn new(data: HashMap<Vec<u8>, Entry>) -> Self {
         Self {
             inner: Arc::new(Mutex::new(data)),
@@ -97,6 +101,11 @@ impl Cache {
     ///
     /// An expired entry returns `None` and is removed on the way out. The lock is held
     /// across the check and the removal so a concurrent insert can't race in between.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::SystemTime`] if the clock reads before the UNIX epoch, which is checked
+    /// on every call, and [`CacheError::MutexPoisoned`] if the map's lock is poisoned.
     pub fn get(&self, key: impl AsRef<[u8]>) -> Result<Option<Entry>, CacheError> {
         let now = Milliseconds::now()?;
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
@@ -116,6 +125,10 @@ impl Cache {
     ///
     /// An already-past deadline is accepted as-is and the next read drops it. Callers do
     /// not need to check the clock first.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::MutexPoisoned`] if the map's lock is poisoned. The clock is never read.
     pub fn insert(
         &self,
         key: impl Into<Vec<u8>>,
@@ -126,6 +139,10 @@ impl Cache {
     }
 
     /// Remove `key`, returning whatever was there. Unconditional: TTL is not consulted.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::MutexPoisoned`] if the map's lock is poisoned.
     pub fn remove(&self, key: impl AsRef<[u8]>) -> Result<Option<Entry>, CacheError> {
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         Ok(guard.remove(key.as_ref()))
@@ -133,6 +150,12 @@ impl Cache {
 
     /// Test for `key`. An expired key returns `false` and is dropped on the way out, so
     /// this agrees with what [`Cache::get`] would say.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::MutexPoisoned`] if the map's lock is poisoned. The clock is read only
+    /// when `key` exists with a deadline, so [`CacheError::SystemTime`] can only come from
+    /// that case.
     pub fn contains(&self, key: impl AsRef<[u8]>) -> Result<bool, CacheError> {
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         let entry = guard.get(key.as_ref());
@@ -155,6 +178,11 @@ impl Cache {
     /// A past timestamp deletes the key immediately rather than storing a
     /// guaranteed-stale entry, and still reports `true`. That matches real Redis
     /// EXPIREAT, and it spares the lazy path a case it would otherwise have to handle.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::SystemTime`] if the clock reads before the UNIX epoch, checked before
+    /// the lock is taken, and [`CacheError::MutexPoisoned`] if the map's lock is poisoned.
     pub fn set_expires_at(
         &self,
         key: impl AsRef<[u8]>,
@@ -178,6 +206,12 @@ impl Cache {
     /// - `Ok(Some(Some(t)))`, `key` expires at UNIX millisecond `t`.
     ///
     /// A passed deadline removes the entry and reports `Ok(None)`.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::MutexPoisoned`] if the map's lock is poisoned, on the lookup or on the
+    /// removal of an expired entry. [`CacheError::SystemTime`] if `key` exists and the clock
+    /// reads before the UNIX epoch; a missing key never reads the clock.
     pub fn expires_at(
         &self,
         key: impl AsRef<[u8]>,
@@ -205,6 +239,11 @@ impl Cache {
     ///
     /// Feeds the `TTL` reply (`:-2`, `:-1`, `:n`), which reports seconds and so has to
     /// divide.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Cache::expires_at`] returns. A key with a live deadline also reads the
+    /// clock a second time, which can fail with [`CacheError::SystemTime`].
     pub fn time_to_live(
         &self,
         key: impl AsRef<[u8]>,
@@ -219,6 +258,13 @@ impl Cache {
 
     /// Drop the TTL on `key` but keep the value. `false` if `key` is missing or had no
     /// TTL to begin with. Feeds `PERSIST`.
+    ///
+    /// The deadline is not checked, so a key that has expired but not yet been dropped
+    /// gets its TTL removed and lives on.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::MutexPoisoned`] if the map's lock is poisoned. The clock is never read.
     pub fn remove_ttl(&self, key: impl AsRef<[u8]>) -> Result<bool, CacheError> {
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
         let Some(entry) = guard.get_mut(key.as_ref()) else {
@@ -238,6 +284,11 @@ impl Cache {
     /// The lock is held for the whole scan-and-delete pass. At this scale that's
     /// microseconds. If it ever starts hurting tail latency, snapshot the expired keys
     /// first and re-check each TTL during eviction.
+    ///
+    /// # Errors
+    ///
+    /// [`CacheError::SystemTime`] if the clock reads before the UNIX epoch, checked before
+    /// the lock is taken, and [`CacheError::MutexPoisoned`] if the map's lock is poisoned.
     pub fn remove_expired(&self) -> Result<usize, CacheError> {
         let now = Milliseconds::now()?;
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
@@ -252,6 +303,16 @@ impl Cache {
         Ok(expired.len())
     }
 
+    /// Apply one parsed command and return what the client is owed.
+    ///
+    /// Each arm calls the method above that backs it, so reads keep the lazy expiry
+    /// behavior. `TTL` is rounded up to whole seconds, and `EXISTS` reports `1` or `0`.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the backing method returns. Every command can fail with
+    /// [`CacheError::MutexPoisoned`]. Only `GET`, `EXISTS`, `TTL`, and the expire commands
+    /// read the clock, so only they can fail with [`CacheError::SystemTime`].
     pub fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, CacheError> {
         Ok(match command {
             CacheCommand::Read(ReadCommand::Get { key }) => match self.get(key)? {

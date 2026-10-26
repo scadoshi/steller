@@ -67,6 +67,16 @@ impl Frame {
     /// Returns [`FrameError::Incomplete`] when there aren't enough bytes yet. That's
     /// the load-bearing signal the session layer uses to keep reading from the socket
     /// before retrying.
+    ///
+    /// # Errors
+    ///
+    /// [`FrameError::Incomplete`] when the header line or a payload has not fully arrived.
+    /// [`FrameError::Malformed`] for a header line that is empty or has no length after the
+    /// sigil, and
+    /// [`FrameError::InvalidLength`] when that length is not a `usize`. The length is
+    /// parsed before the sigil is checked, so an unknown sigil with a bad length reports
+    /// `InvalidLength`, and only one with a valid length reports
+    /// [`FrameError::UnknownSigil`]. For an array, the first error from any element.
     pub fn parse_one(bytes: &[u8]) -> Result<(Frame, &[u8]), FrameError> {
         let Some((header, bytes)) = bytes.split_crlf() else {
             return Err(FrameError::Incomplete);
@@ -91,6 +101,11 @@ impl Frame {
     /// Parse `len` consecutive frames from `bytes` into a [`Frame::Array`]. Iterative
     /// rather than recursive, so an array of N elements uses O(1) stack no matter how big
     /// N gets. That is what stops `MGET key1..key100000` blowing the stack.
+    ///
+    /// # Errors
+    ///
+    /// The first error [`Frame::parse_one`] returns for any element, including
+    /// [`FrameError::Incomplete`] when fewer than `len` elements have arrived.
     pub fn parse_array(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
         let mut vec = Vec::new();
         let mut buf: &[u8] = bytes;
@@ -107,6 +122,11 @@ impl Frame {
     /// Returns [`FrameError::Incomplete`] while the payload or its terminator has not
     /// all arrived, and [`FrameError::MissingTerminator`] when the two bytes after
     /// the payload are there and are not `\r\n`.
+    ///
+    /// # Errors
+    ///
+    /// The two cases above: [`FrameError::Incomplete`] and
+    /// [`FrameError::MissingTerminator`].
     pub fn parse_bulk_string(bytes: &[u8], len: usize) -> Result<(Frame, &[u8]), FrameError> {
         let Some((payload, rest)) = bytes.split_at_checked(len) else {
             return Err(FrameError::Incomplete);
@@ -120,6 +140,13 @@ impl Frame {
         Ok((Frame::BulkString(payload.to_vec()), remaining))
     }
 
+    /// Encode this frame onto `w` as RESP bytes, the inverse of [`Frame::parse_one`]. Does
+    /// not flush.
+    ///
+    /// # Errors
+    ///
+    /// Any I/O error from `w`. The frame is written in several pieces, so a failure can
+    /// leave part of it behind on `w`.
     pub fn write_to(&self, w: &mut impl Write) -> Result<(), IoError> {
         match self {
             Self::Array(frames) => {

@@ -20,6 +20,7 @@
 pub mod domain;
 pub mod inbound;
 pub mod outbound;
+/// The RESP wire codec: frame parsing, frame to command, and reply encoding.
 pub mod resp;
 
 #[cfg(test)]

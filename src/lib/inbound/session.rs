@@ -25,30 +25,45 @@ use crate::domain::ports::{Execute, ExecuteError};
 use crate::resp::frame::{Frame, FrameError};
 use crate::resp::reply::{Replies, Reply, SimpleInner};
 
+/// Why [`Session::repl`] ended with an error rather than a clean disconnect or shutdown.
 #[derive(Debug, Error)]
 pub enum SessionError {
+    /// The reader loop stopped on an error.
     #[error(transparent)]
     ReadHalfError(#[from] ReadHalfError),
+    /// The writer side failed. [`Session::repl`] does not produce this; its writer thread
+    /// logs its own failures.
     #[error(transparent)]
     WriteHalfError(#[from] WriteHalfError),
 }
 
+/// Failure on the reading side of a session, which ends the reader loop.
 #[derive(Debug, Error)]
 pub enum ReadHalfError {
+    /// Reading from the socket failed. [`Session::repl`] skips timeouts and stops on
+    /// anything else.
     #[error(transparent)]
     Io(#[from] IoError),
+    /// Running a command failed in the cache, the log, or the channel registry.
     #[error(transparent)]
     Executor(#[from] ExecuteError),
+    /// The reply mpsc is closed, so the [`WriteHalf`] is gone.
     #[error(transparent)]
     Send(#[from] SendError<Vec<u8>>),
 }
 
+/// Failure on the writing side of a session.
 #[derive(Debug, Error)]
 pub enum WriteHalfError {
+    /// Every sender on the reply mpsc is gone.
     #[error(transparent)]
     Recv(#[from] RecvError),
 }
 
+/// A buffered socket reader that keeps the bytes of any frame not yet complete.
+///
+/// Frames can arrive split across reads or several to a read, so bytes accumulate here
+/// until [`SessionReader::parse_frame`] can take a whole frame off the front.
 #[derive(Debug)]
 pub struct SessionReader<R> {
     inner: BufReader<R>,
@@ -56,6 +71,7 @@ pub struct SessionReader<R> {
 }
 
 impl<R: Read> SessionReader<R> {
+    /// Wraps `reader` with an empty frame buffer.
     pub fn new(reader: R) -> Self {
         Self {
             inner: BufReader::new(reader),
@@ -63,6 +79,13 @@ impl<R: Read> SessionReader<R> {
         }
     }
 
+    /// Read up to 1 KiB from the socket onto the end of the buffer, returning how many bytes
+    /// arrived. `Ok(0)` means EOF.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the underlying [`Read::read`] returns, including a timeout when the socket
+    /// has a read timeout set.
     pub fn read(&mut self) -> std::io::Result<usize> {
         let mut new = [0u8; 1024];
         let len = self.inner.read(&mut new)?;
@@ -71,6 +94,13 @@ impl<R: Read> SessionReader<R> {
         Ok(len)
     }
 
+    /// Take one complete frame off the front of the buffer.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Frame::parse_one`] returns. On [`FrameError::Incomplete`] the buffer is
+    /// kept so the next read can finish the frame. On any other error the whole buffer is
+    /// discarded, including any frames queued behind the bad one.
     pub fn parse_frame(&mut self) -> Result<Frame, FrameError> {
         match Frame::parse_one(&self.buf) {
             Ok((frame, bytes)) => {
@@ -130,6 +160,10 @@ impl<R, E> fmt::Debug for ReadHalf<R, E> {
 impl<R: Read, E: Execute> ReadHalf<R, E> {
     /// Queue reply bytes on the outbound mpsc for the [`WriteHalf`] thread to drain.
     /// Errors only once that receiver is gone.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError`], holding the unsent bytes, once the [`WriteHalf`] has been dropped.
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
         self.sender.send(bytes)
     }
@@ -137,6 +171,13 @@ impl<R: Read, E: Execute> ReadHalf<R, E> {
     /// Read the next complete [`Frame`], pulling more bytes when the buffer holds only
     /// part of one. `Ok(None)` is a clean EOF. A malformed frame gets a `-ERR` reply and
     /// is skipped; the session keeps going.
+    ///
+    /// # Errors
+    ///
+    /// [`ReadHalfError::Io`] when a socket read fails, including a read timeout, which the
+    /// caller decides whether to retry. [`ReadHalfError::Send`] when the `-ERR` reply for a
+    /// malformed frame cannot be queued because the [`WriteHalf`] is gone. A malformed frame
+    /// is not itself an error.
     pub fn read_frame(&mut self) -> Result<Option<Frame>, ReadHalfError> {
         loop {
             match self.reader.parse_frame() {
@@ -156,6 +197,12 @@ impl<R: Read, E: Execute> ReadHalf<R, E> {
 
     /// Read the next frame and parse it into a [`Command`]. An unparseable command gets
     /// a `-ERR` reply and is skipped. `Ok(None)` is a clean EOF.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`ReadHalf::read_frame`] returns, plus [`ReadHalfError::Send`] when the
+    /// `-ERR` reply for an unparseable command cannot be queued. A bad command is not itself
+    /// an error.
     pub fn read_command(&mut self) -> Result<Option<Command>, ReadHalfError> {
         loop {
             match self.read_frame()?.map(Command::try_from) {
@@ -176,6 +223,12 @@ impl<R: Read, E: Execute> ReadHalf<R, E> {
     /// updated after it succeeds, and the cumulative count comes off that set. PUBLISH
     /// serializes its `["message", channel, payload]` push here and hands the registry raw
     /// bytes to fan out.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelsError::MutexPoisoned`] if the registry lock is poisoned. In a
+    /// multi-channel `SUBSCRIBE` or `UNSUBSCRIBE`, the channels handled before the failure
+    /// stay changed in both the registry and this session's set.
     pub fn execute_channel_command(
         &mut self,
         command: ChannelCommand,
@@ -262,6 +315,11 @@ impl<W: Write> fmt::Debug for WriteHalf<W> {
 impl<W: Write + Send + 'static> WriteHalf<W> {
     /// Block until the next buffer of reply bytes arrives. `Err` means every sender is
     /// gone and the session with them, which ends the writer thread.
+    ///
+    /// # Errors
+    ///
+    /// [`RecvError`] once the [`ReadHalf`] and every subscriber clone of its sender have
+    /// been dropped.
     pub fn recv(&self) -> Result<Vec<u8>, RecvError> {
         self.receiver.recv()
     }
@@ -313,6 +371,13 @@ impl<R: Read, W: Write + Send + 'static, E: Execute> Session<R, W, E> {
     /// Every way out of that loop, whether shutdown, clean EOF, a send failure, or a read
     /// error, funnels through [`unsubscribe_from_all`], so a disconnecting session never
     /// leaves dead senders behind. The writer thread is joined before this returns.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::ReadHalfError`] when the reader loop stops on an error: a socket
+    /// read failing with anything but a timeout, a command failing in the cache, the log,
+    /// or the channel registry, or the reply mpsc closing. Shutdown and a clean EOF return
+    /// `Ok`. Writer thread failures are logged, not returned.
     ///
     /// [`unsubscribe_from_all`]: ReadHalf::unsubscribe_from_all
     #[expect(

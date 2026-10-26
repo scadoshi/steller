@@ -62,8 +62,15 @@ impl Server {
     /// Start the server. Blocks until shutdown is signaled, then joins every spawned
     /// thread before returning.
     ///
-    /// `Err` only on fatal setup: a failed bind or a snapshot that won't load.
     /// Per-connection errors are logged and stay put.
+    ///
+    /// # Errors
+    ///
+    /// Only during startup, before any client is served: creating or opening the
+    /// persistence files, reading or decoding the snapshot, replaying a corrupt AOF, the
+    /// first expiry sweep (a poisoned lock or a clock before the epoch), binding the
+    /// listener, or registering the SIGTERM and SIGINT handlers. Once the accept loop runs,
+    /// this returns `Ok`.
     #[expect(
         clippy::print_stdout,
         clippy::print_stderr,

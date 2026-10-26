@@ -19,10 +19,12 @@ use wincode::{SchemaRead, SchemaWrite};
 pub struct Seconds(u64);
 
 impl Seconds {
+    /// Wraps a count of seconds.
     pub fn new(value: u64) -> Self {
         Self(value)
     }
 
+    /// The raw count of seconds.
     pub fn get(&self) -> u64 {
         self.0
     }
@@ -38,10 +40,12 @@ impl Seconds {
 pub struct Milliseconds(u64);
 
 impl Milliseconds {
+    /// Wraps a count of milliseconds, either a UNIX timestamp or a duration.
     pub fn new(value: u64) -> Self {
         Self(value)
     }
 
+    /// The raw count of milliseconds.
     pub fn get(&self) -> u64 {
         self.0
     }
@@ -54,6 +58,10 @@ impl Milliseconds {
     ///
     /// `SystemTime` rather than `Instant` because `Instant` is process-local and these
     /// deadlines outlive the process.
+    ///
+    /// # Errors
+    ///
+    /// [`SystemTimeError`] if the system clock reads earlier than the UNIX epoch.
     pub fn now() -> Result<Self, SystemTimeError> {
         let millis = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis();
         Ok(Self(u64::try_from(millis).unwrap_or(u64::MAX)))

@@ -31,6 +31,10 @@ impl Subscriber {
 
     /// Push raw bytes toward this subscriber's socket. Errors once the receiving
     /// `WriteHalf` is gone, which means the session is too.
+    ///
+    /// # Errors
+    ///
+    /// [`SendError`], holding the undelivered bytes, once the receiving end is dropped.
     pub fn send(&self, message: impl Into<Vec<u8>>) -> Result<(), SendError<Vec<u8>>> {
         self.sender.send(message.into())
     }
@@ -80,6 +84,10 @@ impl Channels {
     /// Register `subscriber` under `channel_id`, creating the channel on first subscribe.
     /// Idempotent per session id: re-subscribing replaces that session's sender. Counting
     /// a session's subscriptions is the caller's bookkeeping, not the registry's.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelsError::MutexPoisoned`] if the registry lock is poisoned.
     pub fn subscribe(
         &self,
         channel_id: impl Into<Vec<u8>>,
@@ -99,6 +107,10 @@ impl Channels {
     /// Remove this subscriber from `channel_id`. The channel itself is dropped once its
     /// last subscriber leaves, so the map only holds live channels. A no-op if either the
     /// channel or the subscriber is already gone.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelsError::MutexPoisoned`] if the registry lock is poisoned.
     pub fn unsubscribe(
         &self,
         channel_id: impl AsRef<[u8]>,
@@ -120,6 +132,11 @@ impl Channels {
     /// Fan `message` out to every subscriber of `channel_id`, returning how many got it.
     /// Subscribers whose receiver has been dropped are pruned along the way. The message
     /// is delivered verbatim, since the caller already serialized the RESP push.
+    ///
+    /// # Errors
+    ///
+    /// [`ChannelsError::MutexPoisoned`] if the registry lock is poisoned. A failed send to
+    /// one subscriber is not an error: that subscriber is pruned and left out of the count.
     pub fn publish(
         &self,
         message: impl AsRef<Vec<u8>>,

@@ -45,6 +45,8 @@ pub enum CommandFromFrameError {
     /// a bulk string belongs, such as an array passed as a key.
     #[error("unexpected value; command is made of an array of bulk strings")]
     UnexpectedFrame,
+    /// The clock read before the UNIX epoch while turning a relative TTL (`EXPIRE`,
+    /// `SET … EX`, `SET … PX`) into an absolute deadline.
     #[error(transparent)]
     SystemTime(#[from] SystemTimeError),
 }

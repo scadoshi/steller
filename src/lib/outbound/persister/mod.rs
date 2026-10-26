@@ -56,13 +56,22 @@ impl From<PersisterError> for RepositoryError {
 /// handle, so cloning it into every session is cheap.
 #[derive(Debug, Clone)]
 pub struct Persister {
+    /// The command log at `cache/aof`, replayed on top of the snapshot at startup.
     pub aof: Aof,
+    /// The full-map dump at `cache/snapshot`, loaded first at startup.
     pub snapshot: Snapshot,
 }
 
 impl Persister {
     /// Open both files, creating them if absent, and assemble the persister. Runs once at
     /// startup, before recovery.
+    ///
+    /// Both paths are relative, so the files land under the process's working directory.
+    ///
+    /// # Errors
+    ///
+    /// [`PersisterError::Io`] if the `cache` directory cannot be created or either file
+    /// cannot be opened for appending.
     pub fn initialize() -> Result<Self, PersisterError> {
         let aof_path: PathBuf = AOF_PATH.into();
         let aof = Aof::from(PersisterInner::try_from(aof_path)?);

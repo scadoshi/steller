@@ -7,6 +7,10 @@
 
 /// A parsed pub/sub command.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    missing_docs,
+    reason = "each field is the channel list, channel, or message its variant's doc names"
+)]
 pub enum ChannelCommand {
     /// Join one or more channels. An empty channel list is rejected at parse time.
     Subscribe { channel_ids: Vec<Vec<u8>> },
@@ -20,18 +24,21 @@ pub enum ChannelCommand {
 }
 
 impl ChannelCommand {
+    /// A `SUBSCRIBE` to `channel_ids`. Nothing here rejects an empty list; the parser does.
     pub fn subscribe(channel_ids: impl Into<Vec<Vec<u8>>>) -> Self {
         Self::Subscribe {
             channel_ids: channel_ids.into(),
         }
     }
 
+    /// An `UNSUBSCRIBE` from `channel_ids`, where an empty list means every channel.
     pub fn unsubscribe(channel_ids: impl Into<Vec<Vec<u8>>>) -> Self {
         Self::Unsubscribe {
             channel_ids: channel_ids.into(),
         }
     }
 
+    /// A `PUBLISH` of `message` to `channel_id`.
     pub fn publish(channel_id: impl Into<Vec<u8>>, message: impl Into<Vec<u8>>) -> Self {
         Self::Publish {
             channel_id: channel_id.into(),
@@ -48,7 +55,10 @@ impl ChannelCommand {
 /// subscribed to nothing, which acks with a null channel and a count of 0.
 #[derive(Debug, Clone)]
 pub struct SubUnsubInnerEntry {
+    /// The channel acted on, or `None` for the null-channel ack.
     pub channel_id: Option<Vec<u8>>,
+    /// How many channels the session is subscribed to once this entry's change has
+    /// landed.
     pub subscription_count: usize,
 }
 
@@ -75,7 +85,21 @@ impl SubUnsubInnerEntry {
 /// reached.
 #[derive(Debug, Clone)]
 pub enum ChannelCommandOutcome {
-    Subscribe { inner: Vec<SubUnsubInnerEntry> },
-    Unsubscribe { inner: Vec<SubUnsubInnerEntry> },
-    Publish { sent_count: u32 },
+    /// A `SUBSCRIBE` that went through.
+    Subscribe {
+        /// One entry per channel, in the order the command listed them.
+        inner: Vec<SubUnsubInnerEntry>,
+    },
+    /// An `UNSUBSCRIBE` that went through.
+    Unsubscribe {
+        /// One entry per channel left, or the single null-channel entry when there was
+        /// nothing to leave.
+        inner: Vec<SubUnsubInnerEntry>,
+    },
+    /// A `PUBLISH` that went through.
+    Publish {
+        /// Subscribers the message reached. Subscribers whose session had already gone
+        /// are pruned and not counted.
+        sent_count: u32,
+    },
 }

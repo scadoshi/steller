@@ -11,8 +11,10 @@ use thiserror::Error;
 /// `\n` because RESP uses those bytes as the frame terminator.
 #[derive(Debug, Error)]
 pub enum SimpleInnerError {
+    /// The bytes contain a `\r`. Checked first, so bytes with both report this one.
     #[error("must not contain a carriage return: (\"\\r\")")]
     IncludesCarriageReturn,
+    /// The bytes contain a `\n` and no `\r`.
     #[error("must not contain a line feed (\"\\n\")")]
     IncludesLineFeed,
 }
@@ -99,6 +101,10 @@ impl Reply {
     /// Serialize this reply onto `w` as RESP bytes. Uses `write_all` so partial writes
     /// don't leave a half-formed frame on the wire; the caller is expected to flush
     /// after dispatching a reply (the session does this).
+    ///
+    /// # Errors
+    ///
+    /// Any I/O error from `w`'s `write_all`.
     pub fn write_to(&self, w: &mut impl Write) -> std::io::Result<()> {
         w.write_all(self.to_bytes().as_slice())
     }
@@ -151,11 +157,17 @@ impl Reply {
 /// serialize concatenated, with no enclosing array header.
 #[derive(Debug, Clone)]
 pub struct Replies {
+    /// The frames, in the order they go out.
     pub inner: Vec<Reply>,
 }
 
 impl Replies {
     /// Write every frame to `buf`, in order.
+    ///
+    /// # Errors
+    ///
+    /// The first error from [`Reply::write_to`]. Frames before the failing one have
+    /// already been written to `buf`.
     pub fn write_to(&self, buf: &mut impl Write) -> std::io::Result<()> {
         for reply in &self.inner {
             reply.write_to(buf)?;
