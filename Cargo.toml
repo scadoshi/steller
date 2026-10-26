@@ -3,6 +3,10 @@ name = "steller"
 version = "0.1.0"
 edition = "2024"
 
+# Its own workspace root. heron's deploy checks steller out inside heron's workspace, and
+# without this cargo refuses to build a package that workspace does not list.
+[workspace]
+
 [[bin]]
 name = "steller"
 path = "src/main.rs"
