@@ -12,7 +12,7 @@ use crate::domain::command::cache::write::WriteCommand;
 use crate::domain::ports::{CacheRepository, RepositoryError};
 
 /// [`CacheRepository`] fake that records every appended command. Snapshot calls are no-ops.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct RecordingRepo {
     pub appended: Arc<Mutex<Vec<WriteCommand>>>,
 }
@@ -29,7 +29,7 @@ impl CacheRepository for RecordingRepo {
 
 /// `Write` adapter backed by a shared `Vec<u8>` so tests can inspect the bytes a session
 /// wrote *after* the session has flushed or dropped.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SharedWriter(pub Arc<Mutex<Vec<u8>>>);
 
 impl SharedWriter {
@@ -52,6 +52,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// RAII temp path. Removes the file (and its `.tmp` sibling, for the snapshot pattern)
 /// on drop so tests don't litter `/tmp`.
+#[derive(Debug)]
 pub struct TempPath {
     pub path: PathBuf,
 }

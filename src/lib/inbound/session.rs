@@ -9,6 +9,7 @@
 //! is still blocked reading from its own client. [`Session::repl`] wires the two together.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::io::{BufReader, BufWriter, Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -115,6 +116,14 @@ pub struct ReadHalf<R, CS> {
 impl<R: Read, CS: CacheService> From<&ReadHalf<R, CS>> for Subscriber {
     fn from(value: &ReadHalf<R, CS>) -> Self {
         Subscriber::new(value.id, value.sender.clone())
+    }
+}
+
+impl<R, CS> fmt::Debug for ReadHalf<R, CS> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReadHalf")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -242,6 +251,12 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
 pub struct WriteHalf<W: Write> {
     writer: BufWriter<W>,
     receiver: Receiver<Vec<u8>>,
+}
+
+impl<W: Write> fmt::Debug for WriteHalf<W> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WriteHalf").finish_non_exhaustive()
+    }
 }
 
 impl<W: Write + Send + 'static> WriteHalf<W> {

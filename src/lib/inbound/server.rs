@@ -52,6 +52,7 @@ fn trigger_shutdown(shutdown: &Arc<AtomicBool>, wake_address: SocketAddr) {
 }
 
 /// Zero-sized handle; the server is [`Server::run`].
+#[derive(Debug)]
 pub struct Server;
 impl Server {
     /// Start the server. Blocks until shutdown is signaled, then joins every spawned

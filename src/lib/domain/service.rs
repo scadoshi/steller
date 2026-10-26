@@ -6,6 +6,8 @@
 //! Generic over `CR: CacheRepository`, so the concrete persister is a plug-in and tests
 //! can substitute a recording fake.
 
+use std::fmt;
+
 use crate::domain::cache::Cache;
 use crate::domain::command::cache::CacheCommand;
 use crate::domain::command::outcome::CommandOutcome;
@@ -17,6 +19,12 @@ use crate::domain::ports::{CacheRepository, CacheService, ServiceError};
 pub struct Service<CR> {
     cache: Cache,
     cache_repo: CR,
+}
+
+impl<CR> fmt::Debug for Service<CR> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Service").finish_non_exhaustive()
+    }
 }
 
 impl<CR: CacheRepository> Service<CR> {
