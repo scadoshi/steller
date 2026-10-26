@@ -21,7 +21,7 @@ use thiserror::Error;
 use crate::domain::channels::{Channels, ChannelsError, Subscriber};
 use crate::domain::command::Command;
 use crate::domain::command::channel::{ChannelCommand, ChannelCommandOutcome, SubUnsubInnerEntry};
-use crate::domain::ports::{CacheService, ServiceError};
+use crate::domain::ports::{Execute, ExecuteError};
 use crate::resp::frame::{Frame, FrameError};
 use crate::resp::reply::{Replies, Reply, SimpleInner};
 
@@ -38,7 +38,7 @@ pub enum ReadHalfError {
     #[error(transparent)]
     Io(#[from] IoError),
     #[error(transparent)]
-    Service(#[from] ServiceError),
+    Executor(#[from] ExecuteError),
     #[error(transparent)]
     Send(#[from] SendError<Vec<u8>>),
 }
@@ -90,11 +90,11 @@ impl<R: Read> SessionReader<R> {
 
 /// A connected client, owning both socket halves until [`split`](Session::split) runs.
 #[derive(Debug)]
-pub struct Session<R: Read, W: Write, CS: CacheService> {
+pub struct Session<R: Read, W: Write, E: Execute> {
     id: u32,
     reader: SessionReader<R>,
     writer: BufWriter<W>,
-    cache_service: CS,
+    executor: E,
     subscriptions: HashSet<Vec<u8>>,
     global_channels: Channels,
 }
@@ -102,10 +102,10 @@ pub struct Session<R: Read, W: Write, CS: CacheService> {
 /// The reading side of a split session. Holds the parser, the cache service, this
 /// session's id and subscriptions, a handle to the shared [`Channels`] registry, and the
 /// sending end of the reply mpsc. Replies are queued here, never written to the socket.
-pub struct ReadHalf<R, CS> {
+pub struct ReadHalf<R, E> {
     id: u32,
     reader: SessionReader<R>,
-    cache_service: CS,
+    executor: E,
     sender: Sender<Vec<u8>>,
     subscriptions: HashSet<Vec<u8>>,
     global_channels: Channels,
@@ -113,13 +113,13 @@ pub struct ReadHalf<R, CS> {
 
 /// Build a registry [`Subscriber`] from a read half. The cloned sender is what lets a
 /// `PUBLISH` fan-out land directly in this session's outbound mpsc.
-impl<R: Read, CS: CacheService> From<&ReadHalf<R, CS>> for Subscriber {
-    fn from(value: &ReadHalf<R, CS>) -> Self {
+impl<R: Read, E: Execute> From<&ReadHalf<R, E>> for Subscriber {
+    fn from(value: &ReadHalf<R, E>) -> Self {
         Subscriber::new(value.id, value.sender.clone())
     }
 }
 
-impl<R, CS> fmt::Debug for ReadHalf<R, CS> {
+impl<R, E> fmt::Debug for ReadHalf<R, E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ReadHalf")
             .field("id", &self.id)
@@ -127,7 +127,7 @@ impl<R, CS> fmt::Debug for ReadHalf<R, CS> {
     }
 }
 
-impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
+impl<R: Read, E: Execute> ReadHalf<R, E> {
     /// Queue reply bytes on the outbound mpsc for the [`WriteHalf`] thread to drain.
     /// Errors only once that receiver is gone.
     pub fn send(&self, bytes: Vec<u8>) -> Result<(), SendError<Vec<u8>>> {
@@ -137,7 +137,7 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
     /// Read the next complete [`Frame`], pulling more bytes when the buffer holds only
     /// part of one. `Ok(None)` is a clean EOF. A malformed frame gets a `-ERR` reply and
     /// is skipped; the session keeps going.
-    pub fn get_frame(&mut self) -> Result<Option<Frame>, ReadHalfError> {
+    pub fn read_frame(&mut self) -> Result<Option<Frame>, ReadHalfError> {
         loop {
             match self.reader.parse_frame() {
                 Ok(frame) => return Ok(Some(frame)),
@@ -156,9 +156,9 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
 
     /// Read the next frame and parse it into a [`Command`]. An unparseable command gets
     /// a `-ERR` reply and is skipped. `Ok(None)` is a clean EOF.
-    pub fn get_command(&mut self) -> Result<Option<Command>, ReadHalfError> {
+    pub fn read_command(&mut self) -> Result<Option<Command>, ReadHalfError> {
         loop {
-            match self.get_frame()?.map(Command::try_from) {
+            match self.read_frame()?.map(Command::try_from) {
                 Some(Ok(cmd)) => return Ok(Some(cmd)),
                 Some(Err(e)) => {
                     let reply = Reply::SimpleError(SimpleInner::sanitized(format!("ERR {e}")));
@@ -267,15 +267,9 @@ impl<W: Write + Send + 'static> WriteHalf<W> {
     }
 }
 
-impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
+impl<R: Read, W: Write + Send + 'static, E: Execute> Session<R, W, E> {
     /// A session over a connected stream's two halves, with no subscriptions yet.
-    pub fn new(
-        id: u32,
-        reader: R,
-        writer: W,
-        cache_service: CS,
-        global_channels: Channels,
-    ) -> Self {
+    pub fn new(id: u32, reader: R, writer: W, executor: E, global_channels: Channels) -> Self {
         let writer = BufWriter::new(writer);
         let reader = SessionReader::new(reader);
         let subscriptions = HashSet::new();
@@ -283,7 +277,7 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
             id,
             reader,
             writer,
-            cache_service,
+            executor,
             subscriptions,
             global_channels,
         }
@@ -291,12 +285,12 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
 
     /// Split into halves joined by a reply mpsc: the reader gets the sender, the writer
     /// the receiver.
-    pub fn split(self) -> (ReadHalf<R, CS>, WriteHalf<W>) {
+    pub fn split(self) -> (ReadHalf<R, E>, WriteHalf<W>) {
         let Session {
             id,
             reader,
             writer,
-            cache_service,
+            executor,
             subscriptions,
             global_channels,
         } = self;
@@ -304,7 +298,7 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
         let rh = ReadHalf {
             id,
             reader,
-            cache_service,
+            executor,
             sender,
             subscriptions,
             global_channels,
@@ -356,13 +350,13 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
             if shutdown_signal.load(Ordering::Relaxed) {
                 break Ok(());
             }
-            match rh.get_command() {
+            match rh.read_command() {
                 Ok(Some(Command::Cache(cc))) => {
                     let reply = Reply::from(
                         match rh
-                            .cache_service
+                            .executor
                             .execute_logged(cc)
-                            .map_err(ReadHalfError::Service)
+                            .map_err(ReadHalfError::Executor)
                         {
                             Ok(outcome) => outcome,
                             Err(e) => break Err(e),
@@ -376,7 +370,7 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
                 Ok(Some(Command::Channel(command))) => {
                     let outcome = match rh
                         .execute_channel_command(command)
-                        .map_err(ServiceError::from)
+                        .map_err(ExecuteError::from)
                         .map_err(ReadHalfError::from)
                     {
                         Ok(outcome) => outcome,
@@ -432,10 +426,10 @@ mod tests {
     use super::*;
     use crate::domain::cache::Cache;
     use crate::domain::command::channel::ChannelCommand;
-    use crate::domain::service::Service;
+    use crate::domain::executor::Executor;
     use crate::test_support::{RecordingRepo, SharedWriter};
 
-    type TestService = Service<RecordingRepo>;
+    type TestService = Executor<RecordingRepo>;
 
     /// Build a `(ReadHalf, WriteHalf)` pair sharing `channels`. The reader has an empty
     /// input stream (these tests drive `execute_channel_command` directly, not the repl
@@ -448,7 +442,7 @@ mod tests {
         ReadHalf<Cursor<Vec<u8>>, TestService>,
         WriteHalf<SharedWriter>,
     ) {
-        let service = Service::new(Cache::default(), RecordingRepo::default());
+        let service = Executor::new(Cache::default(), RecordingRepo::default());
         let session = Session::new(
             id,
             Cursor::new(Vec::new()),

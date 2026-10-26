@@ -75,7 +75,7 @@ To shut down cleanly, send EOF (Ctrl-D) or type `quit` / `exit` on the server's 
 - **Hand-written RESP parser** with real streaming semantics. The parser is also the framer: `Incomplete` when bytes are short, `Malformed` when they're wrong, `Ok((frame, leftover))` otherwise. That leftover slice borrows from the input, so there's no allocation for the rest of the buffer.
 - Binary safe end to end. Keys and values are `Vec<u8>`, not `String`. A bulk-string payload can be a jpeg or hold an interior `\r\n`. UTF-8 is never enforced where the protocol doesn't require it.
 - Newtypes carry the invariants. `SimpleInner` makes a `\r` or `\n` in a simple-string payload unrepresentable, with trusted constructors (`ok()`, `pong()`) and a sanitizing one for arbitrary error bytes. `Seconds` and `Milliseconds` do the same for TTL units, so a seconds value can't be compared against a millisecond deadline.
-- Ports and adapters. The domain defines two trait ports: `CacheRepository`, implemented by the persister, and `CacheService`, implemented by the domain `Service` and called by the session. The dependency arrow points inward. Adapter errors map into a domain-owned `RepositoryError` at the boundary, so the domain never names an outbound type.
+- Ports and adapters. The domain defines two trait ports: `CacheRepository`, implemented by the persister, and `Execute`, implemented by the domain `Service` and called by the session. The dependency arrow points inward. Adapter errors map into a domain-owned `RepositoryError` at the boundary, so the domain never names an outbound type.
 - The AOF is the wire protocol. The log stores each mutation as the exact RESP bytes a client would have sent, using the same `From<WriteCommand> for Frame` and `Frame::write_to` as the network path. Replay therefore needs no decoder of its own; it reuses `Frame::parse_one` and `Command::try_from`, the inbound path.
 
   Two rules keep replay honest:
@@ -90,7 +90,7 @@ To shut down cleanly, send EOF (Ctrl-D) or type `quit` / `exit` on the server's 
   - Compaction drains the buffered writer before it truncates, and truncates through the same append-mode handle. The first benchmark run showed what happens otherwise: a hole of NULs the size of the old log ([BENCHMARKS.md](BENCHMARKS.md)).
 - Split session, which is what makes pub/sub work. A session owns both socket halves and splits into a `ReadHalf` that queues reply bytes on an mpsc and a `WriteHalf` that solely owns the write end and drains that mpsc. A `PUBLISH` from any session drops bytes into a subscriber's queue, and that subscriber's writer delivers them while its reader is still blocked on its own client.
 
-  It's also generic: `Session<R: Read, W: Write, CS: CacheService>` tests against a `Cursor<Vec<u8>>` and a fake service instead of a socket and a real cache.
+  It's also generic: `Session<R: Read, W: Write, E: Execute>` tests against a `Cursor<Vec<u8>>` and a fake service instead of a socket and a real cache.
 - Iterative array parsing. A recursive `parse_array` would blow the stack on `MGET key1..key100000`. The iterative loop costs one extra concept and removes the risk.
 - One TTL representation. `Entry { value: Vec<u8>, expires_at: Option<Milliseconds> }`, a single absolute UNIX millisecond deadline. Simpler than a sidecar map, and the sidecar's performance edge isn't worth the complexity at this scale. `SystemTime` rather than `Instant`, because `Instant` is process-local and unserializable by design.
 
@@ -115,8 +115,8 @@ src/
       cache.rs             # Arc<Mutex<HashMap<Vec<u8>, Entry>>>, lazy expiry, sweep
       channels.rs          # pub/sub registry: channel -> subscribers, fan-out
       time.rs              # Seconds / Milliseconds newtypes, the clock
-      ports.rs             # CacheRepository + CacheService traits, domain errors
-      service.rs           # Service<CR>, orchestrates cache execution and AOF append
+      ports.rs             # CacheRepository + Execute traits, domain errors
+      executor.rs          # Executor<CR>, orchestrates cache execution and AOF append
       command/
         mod.rs             # Command enum + CommandError
         cache/             # ReadCommand (not logged) / WriteCommand (logged)

@@ -235,7 +235,7 @@ mod tests {
         flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
-        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(deadline)));
+        assert_eq!(cache.expires_at("foo").unwrap(), Some(Some(deadline)));
     }
 
     // Proves a deadline in the log survives the whole round-trip: encode, disk, parse,
@@ -251,7 +251,7 @@ mod tests {
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
         assert_eq!(
-            cache.get_expires_at("foo").unwrap(),
+            cache.expires_at("foo").unwrap(),
             Some(Some(Milliseconds::new(u64::MAX)))
         );
     }

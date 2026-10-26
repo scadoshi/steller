@@ -32,8 +32,8 @@ use signal_hook::iterator::Signals;
 
 use crate::domain::cache::Cache;
 use crate::domain::channels::Channels;
+use crate::domain::executor::Executor;
 use crate::domain::ports::CacheRepository;
-use crate::domain::service::Service as CacheService;
 use crate::inbound::session::Session;
 use crate::outbound::persister::Persister;
 
@@ -79,7 +79,7 @@ impl Server {
         persister.aof.replay(&cache)?;
         cache.remove_expired()?;
 
-        let cache_service = CacheService::new(cache.clone(), persister.clone());
+        let executor = Executor::new(cache.clone(), persister.clone());
         let channels = Channels::new();
 
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -190,7 +190,7 @@ impl Server {
                     let shutdown_clone = Arc::clone(&shutdown);
                     id = id.wrapping_add(1);
                     println!("client {id} connected");
-                    let cache_service_clone = cache_service.clone();
+                    let cache_service_clone = executor.clone();
                     let channels_clone = channels.clone();
                     handles.push(spawn(move || {
                         let reader_stream = match writer_stream.try_clone() {

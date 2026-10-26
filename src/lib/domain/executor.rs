@@ -1,6 +1,6 @@
-//! The orchestrator behind the [`CacheService`] port.
+//! The orchestrator behind the [`Execute`] port.
 //!
-//! [`Service`] is the one place that knows how a command becomes both an in-memory effect
+//! [`Executor`] is the one place that knows how a command becomes both an in-memory effect
 //! and a durable one: apply to the cache, then append to the log if it mutated anything.
 //!
 //! Generic over `CR: CacheRepository`, so the concrete persister is a plug-in and tests
@@ -11,33 +11,33 @@ use std::fmt;
 use crate::domain::cache::Cache;
 use crate::domain::command::cache::CacheCommand;
 use crate::domain::command::outcome::CommandOutcome;
-use crate::domain::ports::{CacheRepository, CacheService, ServiceError};
+use crate::domain::ports::{CacheRepository, Execute, ExecuteError};
 
 /// Command orchestrator. Both fields are shared handles, so cloning is cheap and every
 /// session thread can hold a copy pointing at the same cache and log.
 #[derive(Clone)]
-pub struct Service<CR> {
+pub struct Executor<CR> {
     cache: Cache,
     cache_repo: CR,
 }
 
-impl<CR> fmt::Debug for Service<CR> {
+impl<CR> fmt::Debug for Executor<CR> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Service").finish_non_exhaustive()
+        f.debug_struct("Executor").finish_non_exhaustive()
     }
 }
 
-impl<CR: CacheRepository> Service<CR> {
+impl<CR: CacheRepository> Executor<CR> {
     /// A service over a shared cache and a repository.
     pub fn new(cache: Cache, cache_repo: CR) -> Self {
         Self { cache, cache_repo }
     }
 }
 
-impl<CR: CacheRepository> CacheService for Service<CR> {
+impl<CR: CacheRepository> Execute for Executor<CR> {
     /// Run a command against the cache only. No persistence, so rebuilding from the log
     /// doesn't re-write the log.
-    fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, ServiceError> {
+    fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, ExecuteError> {
         let outcome = self.cache.execute(command)?;
         Ok(outcome)
     }
@@ -51,7 +51,7 @@ impl<CR: CacheRepository> CacheService for Service<CR> {
     /// spanning both, or a single-writer model, is what would close it.
     ///
     /// [`CacheCommand::Write`]: crate::domain::command::cache::CacheCommand::Write
-    fn execute_logged(&self, command: CacheCommand) -> Result<CommandOutcome, ServiceError> {
+    fn execute_logged(&self, command: CacheCommand) -> Result<CommandOutcome, ExecuteError> {
         let outcome = self.execute(&command)?;
         if let CacheCommand::Write(wc) = command {
             self.cache_repo.append(wc)?;
@@ -69,10 +69,10 @@ mod tests {
     use crate::domain::time::Milliseconds;
     use crate::test_support::RecordingRepo;
 
-    fn build() -> (Service<RecordingRepo>, Cache, RecordingRepo) {
+    fn build() -> (Executor<RecordingRepo>, Cache, RecordingRepo) {
         let cache = Cache::default();
         let repo = RecordingRepo::default();
-        let service = Service::new(cache.clone(), repo.clone());
+        let service = Executor::new(cache.clone(), repo.clone());
         (service, cache, repo)
     }
 
@@ -103,7 +103,7 @@ mod tests {
             .saturating_add(Milliseconds::new(60_000));
         svc.execute(&WriteCommand::set("foo", "bar", Some(deadline)).into())
             .unwrap();
-        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(deadline)));
+        assert_eq!(cache.expires_at("foo").unwrap(), Some(Some(deadline)));
     }
 
     // A plain SET replaces the whole Entry, which is how it clears an existing TTL.
@@ -118,7 +118,7 @@ mod tests {
             .unwrap();
         svc.execute(&WriteCommand::set("foo", "baz", None).into())
             .unwrap();
-        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(None));
+        assert_eq!(cache.expires_at("foo").unwrap(), Some(None));
     }
 
     #[test]

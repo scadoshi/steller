@@ -4,8 +4,8 @@
 //! inward. The domain names the capabilities it needs; the adapters satisfy them.
 //!
 //! [`CacheRepository`] is the driven (outbound) port, implemented by the persistence
-//! adapter and called by the service. [`CacheService`] is the driving (inbound) port,
-//! implemented by [`Service`](crate::domain::service::Service) and called by the session.
+//! adapter and called by the executor. [`Execute`] is the driving (inbound) port,
+//! implemented by [`Executor`](crate::domain::executor::Executor) and called by the session.
 //!
 //! The error types are domain-owned too. Adapters map their concrete failures into this
 //! vocabulary at the boundary, via the `From` impls in the outbound layer, so the domain
@@ -24,7 +24,7 @@ use crate::domain::command::outcome::CommandOutcome;
 ///
 /// One opaque catch-all for now. The domain doesn't branch on persistence failure modes
 /// yet, so every adapter error boxes into it. Variants like `Unavailable` or `Corrupt`
-/// get carved out when the service needs to decide on one, not before.
+/// get carved out when the executor needs to decide on one, not before.
 #[derive(Debug, Error)]
 pub enum RepositoryError {
     /// Opaque catch-all. The adapter boxes any error it has no domain meaning for into
@@ -44,14 +44,14 @@ pub trait CacheRepository: Clone + Send + Sync + 'static {
     fn snapshot(&self, cache: &Cache) -> Result<(), RepositoryError>;
 }
 
-/// Failure from the service layer, covering everything a command touches.
+/// Failure from the executor, covering everything a command touches.
 ///
-/// `execute` only hits the cache, so it can only fail with [`Cache`](ServiceError::Cache).
+/// `execute` only hits the cache, so it can only fail with [`Cache`](ExecuteError::Cache).
 /// `execute_logged` also appends, so it can additionally fail with
-/// [`Repository`](ServiceError::Repository). The `#[from]` conversions let `?` lift either
+/// [`Repository`](ExecuteError::Repository). The `#[from]` conversions let `?` lift either
 /// at the call site.
 #[derive(Debug, Error)]
-pub enum ServiceError {
+pub enum ExecuteError {
     /// The cache operation failed.
     #[error(transparent)]
     Cache(#[from] CacheError),
@@ -66,14 +66,14 @@ pub enum ServiceError {
     Generic(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Inbound command port. Implemented by [`Service`](crate::domain::service::Service) and
+/// Inbound command port. Implemented by [`Executor`](crate::domain::executor::Executor) and
 /// called by the session, which supplies the parsed
 /// [`Command`](crate::domain::command::Command) and renders the returned
 /// [`CommandOutcome`] as a RESP reply.
-pub trait CacheService: Clone + Send + Sync + 'static {
+pub trait Execute: Clone + Send + Sync + 'static {
     /// Run a command against the cache only, with no persistence. This is what replay
     /// uses, where re-logging would duplicate the log.
-    fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, ServiceError>;
+    fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, ExecuteError>;
     /// Run a command and, if it mutates state, append it to the log. The live client path.
-    fn execute_logged(&self, command: CacheCommand) -> Result<CommandOutcome, ServiceError>;
+    fn execute_logged(&self, command: CacheCommand) -> Result<CommandOutcome, ExecuteError>;
 }

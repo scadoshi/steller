@@ -178,7 +178,7 @@ impl Cache {
     /// - `Ok(Some(Some(t)))`, `key` expires at UNIX millisecond `t`.
     ///
     /// A passed deadline removes the entry and reports `Ok(None)`.
-    pub fn get_expires_at(
+    pub fn expires_at(
         &self,
         key: impl AsRef<[u8]>,
     ) -> Result<Option<Option<Milliseconds>>, CacheError> {
@@ -197,7 +197,7 @@ impl Cache {
     }
 
     /// Time remaining on `key`, in milliseconds. Same three states as
-    /// [`Cache::get_expires_at`]:
+    /// [`Cache::expires_at`]:
     ///
     /// - `Ok(None)`, `key` missing or just expired.
     /// - `Ok(Some(None))`, `key` exists with no TTL.
@@ -209,7 +209,7 @@ impl Cache {
         &self,
         key: impl AsRef<[u8]>,
     ) -> Result<Option<Option<Milliseconds>>, CacheError> {
-        let expires_at = match self.get_expires_at(key.as_ref())? {
+        let expires_at = match self.expires_at(key.as_ref())? {
             None => return Ok(None),
             Some(None) => return Ok(Some(None)),
             Some(Some(t)) => t,
@@ -512,22 +512,22 @@ mod tests {
             .unwrap();
         let new_ttl = in_secs(7200);
         assert!(cache.set_expires_at("foo", new_ttl).unwrap());
-        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(new_ttl)));
+        assert_eq!(cache.expires_at("foo").unwrap(), Some(Some(new_ttl)));
     }
 
-    // ---------- get_expires_at ----------
+    // ---------- expires_at ----------
 
     #[test]
     fn get_expires_at_missing_key_returns_none() {
         let cache = Cache::default();
-        assert_eq!(cache.get_expires_at("missing").unwrap(), None);
+        assert_eq!(cache.expires_at("missing").unwrap(), None);
     }
 
     #[test]
     fn get_expires_at_no_ttl_returns_some_none() {
         let cache = Cache::default();
         cache.insert("foo", Entry::new("bar", None)).unwrap();
-        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(None));
+        assert_eq!(cache.expires_at("foo").unwrap(), Some(None));
     }
 
     #[test]
@@ -537,7 +537,7 @@ mod tests {
         cache
             .insert("foo", Entry::new("bar", Some(future)))
             .unwrap();
-        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(Some(future)));
+        assert_eq!(cache.expires_at("foo").unwrap(), Some(Some(future)));
     }
 
     #[test]
@@ -546,7 +546,7 @@ mod tests {
         cache
             .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
             .unwrap();
-        assert_eq!(cache.get_expires_at("foo").unwrap(), None);
+        assert_eq!(cache.expires_at("foo").unwrap(), None);
         assert!(!cache.contains("foo").unwrap());
     }
 
@@ -598,7 +598,7 @@ mod tests {
             .insert("foo", Entry::new("bar", Some(in_secs(100))))
             .unwrap();
         assert!(cache.remove_ttl("foo").unwrap());
-        assert_eq!(cache.get_expires_at("foo").unwrap(), Some(None));
+        assert_eq!(cache.expires_at("foo").unwrap(), Some(None));
     }
 
     #[test]
