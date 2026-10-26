@@ -3,9 +3,12 @@
 //!
 //! Binds the server's fixed port, so this cannot run beside a live steller.
 
-// clippy.toml's in-tests allowances only reach `#[test]` and `#[cfg(test)]`, and the
-// helpers below are neither. The whole file is test code, so allow them here.
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+#![expect(
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "clippy.toml's in-test allowances reach only #[test] and #[cfg(test)], and these helpers are test code too"
+)]
 
 use std::io::{Read, Write};
 use std::net::TcpStream;

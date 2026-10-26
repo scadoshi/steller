@@ -51,7 +51,10 @@ pub enum CommandFromFrameError {
 
 impl TryFrom<Frame> for Command {
     type Error = CommandFromFrameError;
-    #[expect(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per RESP command keeps every command's parse in one table"
+    )]
     fn try_from(value: Frame) -> Result<Self, Self::Error> {
         let Frame::Array(vec) = value else {
             return Err(CommandFromFrameError::UnexpectedFrame);

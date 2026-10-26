@@ -60,7 +60,10 @@ impl Server {
     ///
     /// `Err` only on fatal setup: a failed bind or a snapshot that won't load.
     /// Per-connection errors are logged and stay put.
-    #[expect(clippy::too_many_lines)]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "startup wires the persister and then each thread in order; one place keeps that sequence readable"
+    )]
     pub fn run() -> anyhow::Result<()> {
         let persister = Persister::initialize()?;
         let cache = Cache::new(persister.snapshot.load()?);
