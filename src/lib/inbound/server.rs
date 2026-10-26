@@ -17,14 +17,14 @@
 //! is picked up the instant it arrives. To get the accept loop out of that block on
 //! shutdown, whichever thread flips the flag then opens one throwaway connection to the
 //! listener's own address: `accept()` returns it, the loop sees the flag, drops the
-//! stream, and stops. (The listener used to be non-blocking with a 50ms sleep between
-//! polls, which put up to 50ms on every new connection's first request.)
+//! stream, and stops. A non-blocking listener polled every 50ms would put up to 50ms on
+//! every new connection's first request.
 
 use std::io::IsTerminal;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{JoinHandle, sleep, spawn};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use signal_hook::consts::{SIGINT, SIGTERM};
@@ -101,7 +101,7 @@ impl Server {
         // Closing this ends `forever()`. A shutdown from anywhere else leaves the
         // thread parked without it.
         let signals_handle = signals.handle();
-        handles.push(spawn(move || {
+        handles.push(thread::spawn(move || {
             if signals.forever().next().is_some() {
                 trigger_shutdown(&signal_shutdown, wake_address);
             }
@@ -112,7 +112,7 @@ impl Server {
         // shutdown.
         if std::io::stdin().is_terminal() {
             let stdin_shutdown = Arc::clone(&shutdown);
-            handles.push(spawn(move || {
+            handles.push(thread::spawn(move || {
                 let mut s = String::new();
                 loop {
                     s.clear();
@@ -139,10 +139,10 @@ impl Server {
         };
 
         let persistence_shutdown = Arc::clone(&shutdown);
-        handles.push(spawn(move || {
+        handles.push(thread::spawn(move || {
             loop {
                 for _ in 0..100 {
-                    sleep(Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(100));
                     if persistence_shutdown.load(Ordering::Relaxed) {
                         persist();
                         return;
@@ -159,10 +159,10 @@ impl Server {
             Err(e) => eprintln!("failed to remove expired keys: {e}"),
         };
         let sweeper_shutdown = Arc::clone(&shutdown);
-        handles.push(spawn(move || {
+        handles.push(thread::spawn(move || {
             loop {
                 for _ in 0..100 {
-                    sleep(Duration::from_millis(100));
+                    thread::sleep(Duration::from_millis(100));
                     if sweeper_shutdown.load(Ordering::Relaxed) {
                         remove_expired();
                         return;
@@ -192,7 +192,7 @@ impl Server {
                     println!("client {id} connected");
                     let cache_service_clone = executor.clone();
                     let channels_clone = channels.clone();
-                    handles.push(spawn(move || {
+                    handles.push(thread::spawn(move || {
                         let reader_stream = match writer_stream.try_clone() {
                             Ok(stream) => stream,
                             Err(e) => {

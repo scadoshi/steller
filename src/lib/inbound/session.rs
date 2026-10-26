@@ -13,8 +13,8 @@ use std::fmt;
 use std::io::{BufReader, BufWriter, Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, RecvError, SendError, Sender, channel};
-use std::thread::{JoinHandle, spawn};
+use std::sync::mpsc::{self, Receiver, RecvError, SendError, Sender};
+use std::thread::{self, JoinHandle};
 
 use thiserror::Error;
 
@@ -294,7 +294,7 @@ impl<R: Read, W: Write + Send + 'static, E: Execute> Session<R, W, E> {
             subscriptions,
             global_channels,
         } = self;
-        let (sender, receiver) = channel::<Vec<u8>>();
+        let (sender, receiver) = mpsc::channel::<Vec<u8>>();
         let rh = ReadHalf {
             id,
             reader,
@@ -328,7 +328,7 @@ impl<R: Read, W: Write + Send + 'static, E: Execute> Session<R, W, E> {
         // writer thread. The shutdown check only runs between messages, since `recv()`
         // parks; the real exit signal is the sender dropping when the reader half goes.
         let write_shutdown = Arc::clone(&shutdown_signal);
-        handles.push(spawn(move || {
+        handles.push(thread::spawn(move || {
             loop {
                 if write_shutdown.load(Ordering::Relaxed) {
                     break;

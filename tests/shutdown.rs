@@ -13,7 +13,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
-use std::thread::sleep;
+use std::thread;
 use std::time::{Duration, Instant};
 
 const ADDRESS: &str = "127.0.0.1:3000";
@@ -29,7 +29,7 @@ fn wait_until_serving(within: Duration) -> bool {
         if ping() {
             return true;
         }
-        sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(50));
     }
     false
 }
@@ -62,7 +62,7 @@ fn wait_for_exit(child: &mut Child, within: Duration) -> std::process::ExitStatu
                 child.wait().ok();
                 panic!("still running {within:?} after SIGTERM");
             }
-            None => sleep(Duration::from_millis(50)),
+            None => thread::sleep(Duration::from_millis(50)),
         }
     }
 }

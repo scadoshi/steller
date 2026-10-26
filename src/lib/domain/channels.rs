@@ -147,14 +147,14 @@ impl Channels {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc::{Receiver, channel};
+    use std::sync::mpsc::{self, Receiver};
 
     use super::*;
 
     /// Register a fresh subscriber on `channel_id` and hand back the receiver end so the
     /// test can assert what got delivered.
     fn subscribe(channels: &Channels, id: u32, channel_id: &[u8]) -> Receiver<Vec<u8>> {
-        let (tx, rx) = channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
         channels
             .subscribe(channel_id.to_vec(), Subscriber::new(id, tx))
             .unwrap();
@@ -209,7 +209,7 @@ mod tests {
     fn resubscribe_same_id_is_idempotent() {
         // Re-subscribing the same session id to the same channel must not double-count.
         let channels = Channels::new();
-        let (tx, rx) = channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
         channels
             .subscribe(b"foo".to_vec(), Subscriber::new(1, tx.clone()))
             .unwrap();

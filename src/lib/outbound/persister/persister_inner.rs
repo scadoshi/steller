@@ -6,7 +6,7 @@
 //! one file handle is shared across threads and writes serialize. The `path` sticks around
 //! for the recovery paths, which open their own transient handles.
 
-use std::fs::{File, OpenOptions, create_dir_all};
+use std::fs::{self, File, OpenOptions};
 use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -32,7 +32,7 @@ impl TryFrom<PathBuf> for PersisterInner {
         if let Some(dir) = value.parent()
             && !dir.as_os_str().is_empty()
         {
-            create_dir_all(dir)?;
+            fs::create_dir_all(dir)?;
         }
         let file = OpenOptions::new()
             .create(true)
