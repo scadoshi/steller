@@ -121,7 +121,7 @@ impl<R: Read> SessionReader<R> {
 
 /// A connected client, owning both socket halves until [`split`](Session::split) runs.
 #[derive(Debug)]
-pub struct Session<R: Read, W: Write, E: Execute> {
+pub struct Session<R, W: Write, E> {
     id: u32,
     reader: SessionReader<R>,
     writer: BufWriter<W>,
