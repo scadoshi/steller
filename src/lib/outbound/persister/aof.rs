@@ -72,17 +72,17 @@ impl Aof {
     /// Encode one mutation as a RESP frame and append it to the log. Holds the writer lock
     /// across the write so a frame is never interleaved with another thread's append.
     ///
-    /// The frame goes into a `BufWriter` and is not flushed here, so it reaches the file
-    /// when the buffer fills, on [`Aof::clear`], or when the last handle drops.
+    /// The buffer is flushed before this returns, so the frame is in the file and survives
+    /// a crash or kill of this process. It is not fsynced, so a power loss can still drop it.
     ///
     /// # Errors
     ///
     /// [`AofError::MutexPoisoned`] if the writer lock is poisoned, and [`AofError::Io`] if
-    /// writing fails. Because of the buffer, an I/O error usually surfaces on the append
-    /// that overflows it, not the one that caused it.
+    /// the write or the flush fails.
     pub fn append(&self, command: WriteCommand) -> Result<(), AofError> {
         let mut guard = self.writer.lock().map_err(|_| AofError::MutexPoisoned)?;
         Frame::from(command).write_to(&mut *guard)?;
+        guard.flush()?;
         Ok(())
     }
 
@@ -130,13 +130,11 @@ impl Aof {
 
     /// Empty the log once a snapshot has captured everything in it.
     ///
-    /// Drain the writer *before* truncating, so nothing still buffered can land in the
-    /// emptied file afterwards. And truncate through the one append-mode handle rather than
+    /// Drains the writer *before* truncating, so nothing still buffered can land in the
+    /// emptied file afterwards. And truncates through the one append-mode handle rather than
     /// opening a second: a replacement opened without `append` carries a real cursor, and
     /// the old writer's drop-flush would then hit that stale offset, leaving a hole of NULs
-    /// at the front of the log that replay cannot parse. That hole only appears once more
-    /// than the `BufWriter`'s 8 KiB has gone through since the last clear, which is why no
-    /// small manual session ever saw it and the first benchmark did.
+    /// at the front of the log that replay cannot parse.
     ///
     /// # Errors
     ///
@@ -167,20 +165,25 @@ mod tests {
         (Aof::from(inner), temp)
     }
 
-    /// Flush the `BufWriter` so bytes actually land on disk for the next read.
-    fn flush(aof: &Aof) {
-        aof.writer.lock().unwrap().flush().unwrap();
-    }
-
     // ---------- append ----------
 
     #[test]
     fn append_writes_resp_frame_to_disk() {
         let (aof, t) = fresh();
         aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
-        flush(&aof);
         let bytes = fs::read(&t.path).unwrap();
         assert_eq!(bytes, b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n");
+    }
+
+    #[test]
+    fn append_reaches_the_file_before_it_returns() {
+        let (aof, t) = fresh();
+        aof.append(WriteCommand::delete("foo")).unwrap();
+        // No flush and no drop: this is what a crash right after the append leaves on disk.
+        assert_eq!(
+            fs::read(&t.path).unwrap(),
+            b"*2\r\n$3\r\nDEL\r\n$3\r\nfoo\r\n"
+        );
     }
 
     // A SET carrying a deadline logs it as PXAT, the millisecond verb, because that is
@@ -194,7 +197,6 @@ mod tests {
             Some(Milliseconds::new(1_700_000_000_000)),
         ))
         .unwrap();
-        flush(&aof);
         let bytes = fs::read(&t.path).unwrap();
         assert_eq!(
             bytes,
@@ -207,7 +209,6 @@ mod tests {
         let (aof, t) = fresh();
         aof.append(WriteCommand::set("a", "1", None)).unwrap();
         aof.append(WriteCommand::delete("a")).unwrap();
-        flush(&aof);
         let bytes = fs::read(&t.path).unwrap();
         let expected = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n*2\r\n$3\r\nDEL\r\n$1\r\na\r\n";
         assert_eq!(bytes, expected);
@@ -227,7 +228,6 @@ mod tests {
     fn replay_applies_set_to_cache() {
         let (aof, _t) = fresh();
         aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
-        flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
         assert_eq!(cache.get("foo").unwrap(), Some(Entry::new("bar", None)));
@@ -239,7 +239,6 @@ mod tests {
         aof.append(WriteCommand::set("foo", "old", None)).unwrap();
         aof.append(WriteCommand::set("foo", "new", None)).unwrap();
         aof.append(WriteCommand::delete("gone")).unwrap();
-        flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
         assert_eq!(cache.get("foo").unwrap(), Some(Entry::new("new", None)));
@@ -254,7 +253,6 @@ mod tests {
         let deadline = Milliseconds::new(u64::MAX - 1);
         aof.append(WriteCommand::set("foo", "bar", Some(deadline)))
             .unwrap();
-        flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
         assert_eq!(cache.expires_at("foo").unwrap(), Some(Some(deadline)));
@@ -268,7 +266,6 @@ mod tests {
         aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
         aof.append(WriteCommand::expire_at("foo", Milliseconds::new(u64::MAX)))
             .unwrap();
-        flush(&aof);
 
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
@@ -284,7 +281,6 @@ mod tests {
     fn replay_trailing_partial_frame_is_tolerated() {
         let (aof, t) = fresh();
         aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
-        flush(&aof);
         // Write past the BufWriter, straight at the file.
         let mut handle = OpenOptions::new().append(true).open(&t.path).unwrap();
         handle.write_all(b"*3\r\n$3\r\nSET\r\n").unwrap();
@@ -311,7 +307,6 @@ mod tests {
     fn clear_truncates_file() {
         let (aof, t) = fresh();
         aof.append(WriteCommand::set("foo", "bar", None)).unwrap();
-        flush(&aof);
         aof.clear().unwrap();
         assert_eq!(fs::read(&t.path).unwrap().len(), 0);
     }
@@ -320,22 +315,19 @@ mod tests {
     fn clear_allows_subsequent_appends() {
         let (aof, _t) = fresh();
         aof.append(WriteCommand::set("old", "v", None)).unwrap();
-        flush(&aof);
         aof.clear().unwrap();
         aof.append(WriteCommand::set("new", "v", None)).unwrap();
-        flush(&aof);
         let cache = Cache::default();
         aof.replay(&cache).unwrap();
         assert_eq!(cache.get("old").unwrap(), None);
         assert_eq!(cache.get("new").unwrap(), Some(Entry::new("v", None)));
     }
 
-    // Regression for the compaction hole. Past 8 KiB the BufWriter has flushed at least
-    // once, so the writer's cursor is off zero and bytes are still pending. A clear that
-    // truncated first, or that swapped in a writer opened without `append`, would flush
-    // those pending bytes into the emptied file at the old offset and leave a NUL hole
-    // replay chokes on. Two rounds, because the old clear replaced the append-mode writer
-    // on the first call and only the second could then punch the hole.
+    // Guards against the compaction hole. Enough appends move the writer's cursor well off
+    // zero. A clear that truncated first, or that swapped in a writer opened without
+    // `append`, would write at that stale offset into the emptied file and leave a NUL hole
+    // replay chokes on. Two rounds, because a swapped writer only punches the hole on the
+    // second clear.
     #[test]
     fn clear_after_a_flushed_writer_leaves_no_hole() {
         let (aof, t) = fresh();
@@ -351,7 +343,6 @@ mod tests {
             );
         }
         aof.append(WriteCommand::set("after", "v", None)).unwrap();
-        flush(&aof);
         let bytes = fs::read(&t.path).unwrap();
         assert!(!bytes.contains(&0), "NUL hole in log");
         let cache = Cache::default();
