@@ -19,7 +19,7 @@ pub struct RecordingRepo {
 
 impl CacheRepository for RecordingRepo {
     fn append(&self, command: WriteCommand) -> Result<(), RepositoryError> {
-        self.appended.lock().unwrap().push(command.clone());
+        self.appended.lock().unwrap().push(command);
         Ok(())
     }
     fn snapshot(&self, _cache: &Cache) -> Result<(), RepositoryError> {

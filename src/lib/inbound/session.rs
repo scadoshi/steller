@@ -328,7 +328,7 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
 
         // writer thread. The shutdown check only runs between messages, since `recv()`
         // parks; the real exit signal is the sender dropping when the reader half goes.
-        let write_shutdown = shutdown_signal.clone();
+        let write_shutdown = Arc::clone(&shutdown_signal);
         handles.push(spawn(move || {
             loop {
                 if write_shutdown.load(Ordering::Relaxed) {
@@ -384,7 +384,8 @@ impl<R: Read, W: Write + Send + 'static, CS: CacheService> Session<R, W, CS> {
                     }
                 }
                 Ok(Some(Command::Ping { message })) => {
-                    let m = message.unwrap_or(Reply::SimpleString(SimpleInner::pong()).to_bytes());
+                    let m = message
+                        .unwrap_or_else(|| Reply::SimpleString(SimpleInner::pong()).to_bytes());
                     match rh.send(m) {
                         Ok(()) => {}
                         Err(e) => break Err(ReadHalfError::Send(e)),
@@ -590,7 +591,7 @@ mod tests {
     fn publish_delivers_message_array_to_subscriber_and_counts() {
         let channels = Channels::new();
         let (mut subscriber, sub_wh) = read_half(1, channels.clone());
-        let (mut publisher, _pub_wh) = read_half(2, channels.clone());
+        let (mut publisher, _pub_wh) = read_half(2, channels);
 
         subscriber
             .execute_channel_command(ChannelCommand::subscribe(vec![b"foo".to_vec()]))

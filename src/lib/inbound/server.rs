@@ -84,7 +84,7 @@ impl Server {
         //
         // Shuts down on SIGTERM (a service manager stopping us) and SIGINT (Ctrl-C),
         // so both take the snapshot-and-join path instead of dying where they stand.
-        let signal_shutdown = shutdown.clone();
+        let signal_shutdown = Arc::clone(&shutdown);
         let mut signals = Signals::new([SIGTERM, SIGINT])?;
         // Closing this ends `forever()`. A shutdown from anywhere else leaves the
         // thread parked without it.
@@ -99,7 +99,7 @@ impl Server {
         // service manager does, `read_line` returns `Ok(0)` at once and that reads as
         // shutdown.
         if std::io::stdin().is_terminal() {
-            let stdin_shutdown = shutdown.clone();
+            let stdin_shutdown = Arc::clone(&shutdown);
             handles.push(spawn(move || {
                 let mut s = String::new();
                 loop {
@@ -126,7 +126,7 @@ impl Server {
             Err(e) => eprintln!("failed to persist cache: {e}"),
         };
 
-        let persistence_shutdown = shutdown.clone();
+        let persistence_shutdown = Arc::clone(&shutdown);
         handles.push(spawn(move || {
             loop {
                 for _ in 0..100 {
@@ -141,12 +141,12 @@ impl Server {
         }));
 
         // ttl
-        let sweeper_cache = cache.clone();
+        let sweeper_cache = cache;
         let remove_expired = move || match sweeper_cache.remove_expired() {
             Ok(expired) => println!("{expired} expired keys removed"),
             Err(e) => eprintln!("failed to remove expired keys: {e}"),
         };
-        let sweeper_shutdown = shutdown.clone();
+        let sweeper_shutdown = Arc::clone(&shutdown);
         handles.push(spawn(move || {
             loop {
                 for _ in 0..100 {
@@ -175,7 +175,7 @@ impl Server {
                         drop(writer_stream);
                         break;
                     }
-                    let shutdown_clone = shutdown.clone();
+                    let shutdown_clone = Arc::clone(&shutdown);
                     id = id.wrapping_add(1);
                     println!("client {id} connected");
                     let cache_service_clone = cache_service.clone();
