@@ -327,7 +327,7 @@ impl<R: Read, W: Write + Send + 'static, E: Execute> Session<R, W, E> {
 
         // writer thread. The shutdown check only runs between messages, since `recv()`
         // parks; the real exit signal is the sender dropping when the reader half goes.
-        let write_shutdown = Arc::clone(&shutdown_signal);
+        let write_shutdown = Arc::clone(shutdown_signal);
         handles.push(thread::spawn(move || {
             loop {
                 if write_shutdown.load(Ordering::Relaxed) {
