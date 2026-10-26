@@ -49,7 +49,7 @@ pub enum WriteHalfError {
 }
 
 #[derive(Debug)]
-pub struct SessionReader<R: Read> {
+pub struct SessionReader<R> {
     inner: BufReader<R>,
     buf: Vec<u8>,
 }
@@ -101,7 +101,7 @@ pub struct Session<R: Read, W: Write, CS: CacheService> {
 /// The reading side of a split session. Holds the parser, the cache service, this
 /// session's id and subscriptions, a handle to the shared [`Channels`] registry, and the
 /// sending end of the reply mpsc. Replies are queued here, never written to the socket.
-pub struct ReadHalf<R: Read, CS: CacheService> {
+pub struct ReadHalf<R, CS> {
     id: u32,
     reader: SessionReader<R>,
     cache_service: CS,
@@ -239,7 +239,7 @@ impl<R: Read, CS: CacheService> ReadHalf<R, CS> {
 /// The writing side of a split session, and the only owner of the socket's write end. Its
 /// thread blocks on the reply mpsc and writes whatever arrives, whether that's a command
 /// reply from its own [`ReadHalf`] or a pub/sub push fanned in from another session.
-pub struct WriteHalf<W: Write + Send> {
+pub struct WriteHalf<W: Write> {
     writer: BufWriter<W>,
     receiver: Receiver<Vec<u8>>,
 }

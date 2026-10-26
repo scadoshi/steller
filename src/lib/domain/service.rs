@@ -14,7 +14,7 @@ use crate::domain::ports::{CacheRepository, CacheService, ServiceError};
 /// Command orchestrator. Both fields are shared handles, so cloning is cheap and every
 /// session thread can hold a copy pointing at the same cache and log.
 #[derive(Clone)]
-pub struct Service<CR: CacheRepository> {
+pub struct Service<CR> {
     cache: Cache,
     cache_repo: CR,
 }
