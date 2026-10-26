@@ -256,26 +256,34 @@ impl Cache {
         Ok(Some(Some(expires_at.saturating_sub(Milliseconds::now()?))))
     }
 
-    /// Drop the TTL on `key` but keep the value. `false` if `key` is missing or had no
-    /// TTL to begin with. Feeds `PERSIST`.
+    /// Drop the TTL on `key` but keep the value. `false` if `key` is missing, had no TTL
+    /// to begin with, or had already expired. Feeds `PERSIST`.
     ///
-    /// The deadline is not checked, so a key that has expired but not yet been dropped
-    /// gets its TTL removed and lives on.
+    /// A key whose deadline has passed is dropped here, under the same lock, rather than
+    /// having its TTL removed, so `PERSIST` never brings an expired key back.
     ///
     /// # Errors
     ///
-    /// [`CacheError::MutexPoisoned`] if the map's lock is poisoned. The clock is never read.
+    /// [`CacheError::MutexPoisoned`] if the map's lock is poisoned. The clock is read only
+    /// when `key` exists with a deadline, so [`CacheError::SystemTime`] can only come from
+    /// that case.
     pub fn remove_ttl(&self, key: impl AsRef<[u8]>) -> Result<bool, CacheError> {
         let mut guard = self.inner.lock().map_err(|_| CacheError::MutexPoisoned)?;
-        let Some(entry) = guard.get_mut(key.as_ref()) else {
+        let Some(Entry {
+            expires_at: Some(deadline),
+            ..
+        }) = guard.get(key.as_ref())
+        else {
             return Ok(false);
         };
-        if entry.expires_at.is_some() {
-            entry.expires_at = None;
-            Ok(true)
-        } else {
-            Ok(false)
+        if Milliseconds::now()? >= *deadline {
+            guard.remove(key.as_ref());
+            return Ok(false);
         }
+        if let Some(entry) = guard.get_mut(key.as_ref()) {
+            entry.expires_at = None;
+        }
+        Ok(true)
     }
 
     /// Sweep every expired entry, returning how many went. The sweeper thread in
@@ -311,8 +319,8 @@ impl Cache {
     /// # Errors
     ///
     /// Whatever the backing method returns. Every command can fail with
-    /// [`CacheError::MutexPoisoned`]. Only `GET`, `EXISTS`, `TTL`, and the expire commands
-    /// read the clock, so only they can fail with [`CacheError::SystemTime`].
+    /// [`CacheError::MutexPoisoned`]. Only `GET`, `EXISTS`, `TTL`, `PERSIST`, and the expire
+    /// commands read the clock, so only they can fail with [`CacheError::SystemTime`].
     pub fn execute(&self, command: &CacheCommand) -> Result<CommandOutcome, CacheError> {
         Ok(match command {
             CacheCommand::Read(ReadCommand::Get { key }) => match self.get(key)? {
@@ -660,6 +668,17 @@ mod tests {
             .unwrap();
         assert!(cache.remove_ttl("foo").unwrap());
         assert_eq!(cache.expires_at("foo").unwrap(), Some(None));
+    }
+
+    #[test]
+    fn remove_ttl_on_an_expired_key_drops_it_instead_of_reviving_it() {
+        let cache = Cache::default();
+        cache
+            .insert("foo", Entry::new("bar", Some(Milliseconds::new(1))))
+            .unwrap();
+        assert!(!cache.remove_ttl("foo").unwrap());
+        assert_eq!(cache.lock().unwrap().len(), 0, "the expired key is gone");
+        assert_eq!(cache.get("foo").unwrap(), None);
     }
 
     #[test]
