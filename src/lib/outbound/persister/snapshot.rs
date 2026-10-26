@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::ops::Deref;
+use std::path::Path;
 
 use thiserror::Error;
 use wincode::{ReadError, WriteError};
@@ -81,14 +82,16 @@ impl Snapshot {
     /// `rename` it over the live file. The caller passes the map behind the held cache
     /// lock so the dump is a consistent point-in-time view.
     ///
-    /// The temp file is not synced before the rename, so the rename is atomic against a
-    /// crash of this process but not against power loss.
+    /// The temp file is synced before the rename and its folder after it, so the new
+    /// snapshot survives a power loss as well as a crash. A power loss before the folder
+    /// sync leaves either the old snapshot or the new one, never a mix.
     ///
     /// # Errors
     ///
-    /// [`SnapshotError::Io`] if the temp file cannot be created or written, or the rename
-    /// fails, and [`SnapshotError::Write`] if the map does not serialize. The live snapshot
-    /// is untouched in every case; a failed write can leave the `.tmp` file behind.
+    /// [`SnapshotError::Io`] if the temp file cannot be created, written or synced, the
+    /// rename fails, or the folder cannot be opened or synced, and [`SnapshotError::Write`]
+    /// if the map does not serialize. Before the rename the live snapshot is untouched, and
+    /// a failed write can leave the `.tmp` file behind.
     pub fn store(&self, guard: &HashMap<Vec<u8>, Entry>) -> Result<(), SnapshotError> {
         let temp_path = self.path.with_extension("tmp");
         let mut temp = OpenOptions::new()
@@ -98,7 +101,13 @@ impl Snapshot {
             .open(&temp_path)?;
         let bytes = wincode::serialize(guard)?;
         temp.write_all(&bytes)?;
+        temp.sync_all()?;
         fs::rename(temp_path, &*self.path)?;
+        let folder = match self.path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        File::open(folder)?.sync_all()?;
         Ok(())
     }
 }
